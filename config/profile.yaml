@@ -1,0 +1,37 @@
+# Your details. Used to fill forms and given to the LLM as context.
+# Only put TRUE information here — the tool never invents anything beyond this + your resume.
+
+resume_path: resume/resume.pdf
+
+personal:
+  full_name: ""
+  email: ""
+  phone: ""
+  current_city: ""
+  linkedin_url: ""
+  github_url: ""
+
+experience:
+  total_years: 0
+  current_company: ""
+  current_title: ""
+  current_ctc_lpa: 0        # lakhs per annum
+  expected_ctc_lpa: 0
+  notice_period_days: 30
+  willing_to_relocate: true
+  highest_education: ""     # e.g. B.Tech Computer Science, 2020
+
+skills:
+  - Python
+  - SQL
+
+# Direct answers. Key = words that must ALL appear in the question (case-insensitive).
+# Longest matching key wins. These are used before asking the LLM.
+answers:
+  "notice period": "30"
+  "current ctc": "0"
+  "expected ctc": "0"
+  "total experience": "0"
+  "relocate": "Yes"
+  "current location": ""
+  "authorized to work": "Yes"

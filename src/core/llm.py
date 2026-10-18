@@ -7,19 +7,31 @@ import time
 import httpx
 
 
+class LLMUnavailable(Exception):
+    """Bad key / no credits: stop calling the API for the rest of the run."""
+
+
 class LLM:
     def __init__(self, provider: str, api_key: str, model: str):
         self.provider = provider
         self.api_key = api_key
         self.model = model
         self.http = httpx.Client(timeout=60)
+        self.disabled_reason = ""
 
     def json(self, system: str, user: str) -> dict:
+        if self.disabled_reason:
+            raise LLMUnavailable(self.disabled_reason)
         for attempt in range(3):
             try:
                 text = self._gemini(system, user) if self.provider == "gemini" else self._openai(system, user)
                 return _parse_json(text)
             except httpx.HTTPStatusError as e:
+                body = e.response.text
+                if e.response.status_code in (401, 403) or "quota" in body or "credit" in body:
+                    self.disabled_reason = f"{self.provider} unavailable ({e.response.status_code}): {body[:200]}"
+                    print(f"  [llm] {self.disabled_reason}\n  [llm] continuing without AI for this run.")
+                    raise LLMUnavailable(self.disabled_reason) from e
                 if e.response.status_code in (429, 500, 502, 503) and attempt < 2:
                     time.sleep(3 * (attempt + 1))
                     continue

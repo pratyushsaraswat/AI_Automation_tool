@@ -40,7 +40,7 @@ SEL = {
     "chat_send": ".sendMsg",
     "chat_close": "[class*='chatbot_Drawer'] [class*='crossIcon']",
 }
-SUCCESS_RE = re.compile(r"successfully applied|applied successfully|application sent", re.I)
+SUCCESS_RE = re.compile(r"successfully applied|applied successfully|application sent|^\s*Applied to\b", re.I)
 
 
 def _slug(text: str) -> str:
@@ -143,10 +143,18 @@ class NaukriAdapter(SiteAdapter):
             self._close_chat(page)
             raise
 
+    def open_external(self, page):
+        btn = page.locator(SEL["company_site_btn"]).first
+        if not btn.count():
+            return None
+        self.human.pause()
+        return self.click_to_new_tab(page, btn)
+
     # --- chatbot -----------------------------------------------------------
 
     def _applied(self, page) -> bool:
-        return (page.get_by_text(SUCCESS_RE).count() > 0
+        return ("saveApply" in page.url or "myapply" in page.url
+                or page.get_by_text(SUCCESS_RE).count() > 0
                 or page.locator(SEL["already_applied"]).count() > 0)
 
     def _chatbot(self, page, session: ApplySession) -> str:
@@ -175,13 +183,16 @@ class NaukriAdapter(SiteAdapter):
             repeats = 0
 
             field = self._detect_field(page, question)
+            if field is None:
+                page.wait_for_timeout(1500)
+                continue
             value = session.answer(field)
             self._fill(page, field, value)
             last_q = question
             page.wait_for_timeout(2000)
         return "failed"
 
-    def _detect_field(self, page, question: str) -> Field:
+    def _detect_field(self, page, question: str) -> Field | None:
         radios = page.locator(SEL["chat_radio"])
         if radios.count():
             return Field(question, "radio", [r.inner_text().strip() for r in radios.all()])
@@ -191,7 +202,10 @@ class NaukriAdapter(SiteAdapter):
         chips = page.locator(SEL["chat_chip"])
         if chips.count():
             return Field(question, "chips", [c.inner_text().strip() for c in chips.all()])
-        return Field(question, "text")
+        box = page.locator(SEL["chat_text"])
+        if box.count() and box.first.is_visible():
+            return Field(question, "text")
+        return None          # bot message with nothing to answer ("Thank you for your responses")
 
     def _fill(self, page, field: Field, value: str):
         self.human.pause()

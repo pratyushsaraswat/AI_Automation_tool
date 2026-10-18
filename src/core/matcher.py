@@ -1,6 +1,6 @@
 import yaml
 
-from src.core.llm import LLM
+from src.core.llm import LLM, LLMUnavailable
 from src.core.models import JobDetail
 
 SYSTEM = """You judge how well a candidate fits a job. Be strict and realistic.
@@ -19,6 +19,8 @@ class Matcher:
         if self.llm:
             try:
                 return self._llm_score(detail)
+            except LLMUnavailable:
+                pass
             except Exception as e:
                 print(f"  [llm error] {e} — using keyword match")
         return self._keyword_score(detail)

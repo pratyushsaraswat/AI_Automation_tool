@@ -1,37 +1,72 @@
 # Your details. Used to fill forms and given to the LLM as context.
 # Only put TRUE information here — the tool never invents anything beyond this + your resume.
 
-resume_path: resume/resume.pdf
+resume_path: resume/resume_blackrock_fullstack.pdf
 
 personal:
-  full_name: ""
-  email: ""
-  phone: ""
-  current_city: ""
-  linkedin_url: ""
-  github_url: ""
+  full_name: "Pratyush Saraswat"
+  email: "pratyushsaraswat24@gmail.com"
+  phone: "7696662346"
+  current_city: "Mumbai"
+  linkedin_url: "https://www.linkedin.com/in/pratyush-saraswat/"
+  github_url: "https://github.com/pratyushsaraswat"
 
 experience:
-  total_years: 0
-  current_company: ""
-  current_title: ""
-  current_ctc_lpa: 0        # lakhs per annum
-  expected_ctc_lpa: 0
+  total_years: 2
+  current_company: "Netcore Cloud"
+  current_title: "Software Developer"
+  current_ctc_lpa: 9          # ₹9,00,000 per annum
+  expected_ctc_lpa: 15
   notice_period_days: 30
   willing_to_relocate: true
-  highest_education: ""     # e.g. B.Tech Computer Science, 2020
+  skill_years: 2            # "years of experience with X?" for any skill on your resume / skills list
+  unknown_skill_years: ask  # skill NOT on your resume: "ask" (recommended) or a number, e.g. 0
+  highest_education: "B.E. Computer Science and Engineering, Chandigarh University, 2024, CGPA 8.02/10"
 
 skills:
-  - Python
+  - Java
+  - Spring Boot
+  - Go
+  - React
+  - TypeScript
+  - Microservices
+  - Kafka
+  - Redis
+  - Docker
+  - Kubernetes
+  - AWS
+  - GCP
   - SQL
+  - REST
 
 # Direct answers. Key = words that must ALL appear in the question (case-insensitive).
-# Longest matching key wins. These are used before asking the LLM.
+# Longest matching key wins. Empty values are ignored (falls through to LLM / asks you).
 answers:
+  "phone country code": "India (+91)"
   "notice period": "30"
-  "current ctc": "0"
-  "expected ctc": "0"
-  "total experience": "0"
+  "current ctc": "9"
+  "expected ctc": "15"
+  "linkedin": "https://www.linkedin.com/in/pratyush-saraswat/"
+  "github": "https://github.com/pratyushsaraswat"
+  "total experience": "2"
+  "years of experience": "2"
   "relocate": "Yes"
-  "current location": ""
+  "current location": "Mumbai"
+  "preferred location": "Mumbai"
   "authorized to work": "Yes"
+  # common Workday / company-site questions
+  "country": "India"
+  "how did you hear": "LinkedIn"
+  "sponsorship": "No"
+  "previously worked": "No"
+  "previously employed": "No"
+  "veteran": "I am not a protected veteran"
+  "disability": "I do not wish to answer"
+  "years experience java": "2"
+  "years experience spring boot": "2"
+  "years experience react": "2"
+  "years experience go": "2"
+  "years experience golang": "2"
+  "years experience kafka": "2"
+  "immediate joiner": "No"
+  "gender": "Male"              # optional

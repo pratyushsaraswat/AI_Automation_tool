@@ -1,3 +1,4 @@
+import os
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -14,10 +15,14 @@ def open_browser():
     with sync_playwright() as pw:
         opts = dict(user_data_dir=str(PROFILE_DIR), headless=False, viewport=None,
                     args=["--start-maximized"])
-        try:
-            ctx = pw.chromium.launch_persistent_context(channel="chrome", **opts)
-        except PlaywrightError:
-            ctx = pw.chromium.launch_persistent_context(**opts)
+        browser_path = os.getenv("BROWSER_PATH", "").strip()   # any Chromium browser: Brave, Edge...
+        if browser_path:
+            ctx = pw.chromium.launch_persistent_context(executable_path=browser_path, **opts)
+        else:
+            try:
+                ctx = pw.chromium.launch_persistent_context(channel="chrome", **opts)
+            except PlaywrightError:
+                ctx = pw.chromium.launch_persistent_context(**opts)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             yield page

@@ -16,8 +16,9 @@ class Reviewer:
 
     def confirm_apply(self, detail: JobDetail, score: int, reason: str) -> bool:
         job = detail.job
+        where = "[magenta]external — company site[/]" if detail.external else f"[green]{job.site}[/]"
         console.print(Panel(
-            f"[bold]{job.title}[/] — {job.company}\n"
+            f"[bold]{job.title}[/] — {job.company}   ({where})\n"
             f"{job.location} · {job.experience}\n"
             f"Match: [bold]{score}[/]/100 — {reason}\n{job.url}",
             title="Job", border_style="cyan",
@@ -29,8 +30,17 @@ class Reviewer:
             raise QuitRun()
         return choice != "s"
 
-    def confirm_answer(self, f: Field, ans: Answer | None) -> str:
-        if (ans and self.auto_accept_known and ans.source in ("profile", "cache")
+    def choose(self, prompt: str, choices: str) -> str:
+        """Single-letter prompt, e.g. choose('Finished?', 'dsq'). q always quits."""
+        while True:
+            raw = console.input(f"{prompt} > ").strip().lower()[:1]
+            if raw == "q":
+                raise QuitRun()
+            if raw and raw in choices:
+                return raw
+
+    def confirm_answer(self, f: Field, ans: Answer | None, force: bool = False) -> str:
+        if (not force and ans and self.auto_accept_known and ans.source in ("profile", "memory")
                 and ans.confidence >= self.threshold):
             console.print(f"  [green]✓[/] {f.label} → [bold]{ans.value}[/] [dim]({ans.source})[/]")
             return ans.value

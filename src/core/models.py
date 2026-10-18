@@ -16,15 +16,18 @@ class Job:
 class JobDetail:
     job: Job
     description: str
-    external: bool = False         # "Apply on company site" — we skip these
+    external: bool = False         # applies on the company's own site (Greenhouse, Lever, ...)
     already_applied: bool = False
+    closed: bool = False           # no longer accepting applications
+    company_url: str = ""          # LinkedIn company page, when known (used for referral outreach)
 
 
 @dataclass
 class Field:
     label: str
-    kind: str                      # text | radio | checkbox | chips | select
+    kind: str                      # text | textarea | radio | checkbox | single_checkbox | chips | select
     options: list[str] = field(default_factory=list)
+    required: bool = False
 
 
 @dataclass

@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Iterator
 
+from playwright.sync_api import TimeoutError as PWTimeout
+
 from src.core.human import Human
 from src.core.models import Job, JobDetail
 from src.core.session import ApplySession
@@ -35,3 +37,23 @@ class SiteAdapter(ABC):
     def apply(self, page, session: ApplySession) -> str:
         """Run the apply flow. Return status: applied | failed | unknown.
         Raise SkipJob / QuitRun (via session) when the user says so."""
+
+    def open_external(self, page):
+        """Click the site's 'apply on company site' button. Return the company-site Page or None."""
+        return None
+
+    @staticmethod
+    def click_to_new_tab(page, locator, timeout: int = 10000):
+        """Click something that opens the company site — in a new tab, or in the same tab."""
+        before = page.url
+        try:
+            with page.context.expect_page(timeout=timeout) as info:
+                locator.click()
+            new = info.value
+        except PWTimeout:
+            if page.url != before:
+                return page            # navigated in the same tab
+            return None
+        new.wait_for_load_state("domcontentloaded")
+        new.bring_to_front()
+        return new

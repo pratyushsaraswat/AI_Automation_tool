@@ -1,0 +1,30 @@
+# Referral outreach on LinkedIn — after an application, message people at that company.
+enabled: true
+ask_after_apply: true        # after each successful application: "Message people at <company>?"
+daily_cap: 10                # people per day (LinkedIn restricts accounts that message in bulk)
+per_company: 2               # people per company
+prefer: connect              # connect = invite with a note (free) | message = InMail/message first (uses Premium credits)
+mode: send                   # send = tool clicks Send after your OK | draft = tool fills, YOU click Send
+search_keywords:             # who to look for on the company's People tab, in this order
+  - technical recruiter
+  - talent acquisition
+  - engineering manager
+  - software engineer
+
+my_title: "Software Developer"
+my_company: "Netcore Cloud"
+
+# Placeholders: {first_name} {role} {company} {skills} (4-5 job skills you have)
+#               {skills_short} (3) {my_title} {my_company}
+message: >-
+  Hi {first_name}, I'm a {my_title} at {my_company} with hands-on experience in {skills}.
+  I recently applied for the {role} role at {company} and my background lines up well with what the
+  team needs. Would you be open to referring me or pointing me to the right person? Happy to share my
+  resume. Thank you!
+inmail_subject: "Referral request: {role} at {company}"
+# Connection-request note: LinkedIn limit is 300 characters. {skills_short} gets as many of the
+# job's skills (that you have) as fit.
+note: >-
+  Hi {first_name}, I'm a {my_title} at {my_company} working with {skills_short}. I applied for the
+  {role} role at {company} and my experience matches the JD closely. Would really appreciate
+  connecting or a referral. Thank you!

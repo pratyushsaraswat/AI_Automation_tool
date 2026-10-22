@@ -79,7 +79,7 @@ class LinkedInAdapter(SiteAdapter):
             yield {"url": url}
         for q in self.cfg.get("queries") or []:
             for loc in q.get("locations") or [""]:
-                yield {"url": self._search_url(q["keywords"], loc)}
+                yield {"url": self._search_url(q["keywords"], loc), "keywords": q["keywords"]}
 
     def _search_url(self, keywords: str, location: str) -> str:
         params = {"keywords": keywords}
@@ -91,6 +91,8 @@ class LinkedInAdapter(SiteAdapter):
             params["f_E"] = ",".join(str(x) for x in self.cfg["experience_levels"])
         if self.cfg.get("easy_apply_only", True):
             params["f_AL"] = "true"
+        if self.cfg.get("sort_by_date", True):
+            params["sortBy"] = "DD"          # most recent first
         return f"{BASE}/jobs/search-results/?{urlencode(params)}"
 
     def search(self, page, query: dict) -> Iterator[Job]:

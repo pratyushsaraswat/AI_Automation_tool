@@ -29,7 +29,8 @@ def _clean_role(role: str) -> str:
 
 
 def build_pitch(cfg: dict, role: str, company: str, job_text: str, resume_text: str,
-                first_name: str = "there") -> Pitch:
+                first_name: str = "there", general: bool = False, job_id: str = "") -> Pitch:
+    """general=True: no specific application — 'exploring roles at {company}' templates."""
     job_skills = find_skills(f"{role}\n{job_text}")
     mine = set(find_skills(resume_text))
     matched = [s for s in job_skills if s in mine]
@@ -41,17 +42,20 @@ def build_pitch(cfg: dict, role: str, company: str, job_text: str, resume_text: 
         "first_name": first_name or "there", "role": _clean_role(role) or "open", "company": company,
         "my_title": cfg.get("my_title", ""), "my_company": cfg.get("my_company", ""),
         "skills": _join(matched[:5]), "skills_short": ", ".join(matched[:3]),
+        "job_ref": f" (Job ID: {job_id})" if job_id else "",
     }
-    message = " ".join(cfg["message"].format(**values).split())
+    msg_t = cfg.get("message_general", cfg["message"]) if general else cfg["message"]
+    note_t = cfg.get("note_general", cfg["note"]) if general else cfg["note"]
+    message = " ".join(msg_t.format(**values).split())
     subject = cfg.get("inmail_subject", "").format(**values)
     for n in range(min(len(matched), 6), 0, -1):          # as many job skills as fit in 300 chars
         values["skills_short"] = _join(matched[:n])
-        note = " ".join(cfg["note"].format(**values).split())
+        note = " ".join(note_t.format(**values).split())
         if len(note) <= NOTE_LIMIT - 12:                  # leave room for a longer first name
             break
     while len(note) > NOTE_LIMIT and values["skills_short"].count(","):    # drop skills until it fits
         values["skills_short"] = values["skills_short"].rsplit(",", 1)[0]
-        note = " ".join(cfg["note"].format(**values).split())
+        note = " ".join(note_t.format(**values).split())
     if len(note) > NOTE_LIMIT:
         note = note[:NOTE_LIMIT - 1].rsplit(" ", 1)[0] + "…"
     return Pitch(message, note, subject, matched, to_study)
@@ -59,7 +63,7 @@ def build_pitch(cfg: dict, role: str, company: str, job_text: str, resume_text: 
 
 TRIMMABLE = [  # least important first; the referral ask is never removed
     r" and my (?:experience|background) (?:matches|lines up)[^.]*", r"\s*Happy to share my resume\.",
-    r" really", r",? working with [^.]*?(?= I applied)", r"\s*Thank you!$",
+    r" really", r" \(Job ID: [^)]*\)", r",? working with [^.]*?(?= I applied)", r"\s*Thank you!$",
 ]
 
 

@@ -12,6 +12,7 @@ from urllib.parse import quote, urljoin
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PWTimeout
 from rich.panel import Panel
+from rich.table import Table
 
 from src.core.browser import dump_debug
 from src.core.models import QuitRun
@@ -42,6 +43,27 @@ PEOPLE_JS = r"""(me) => {
 }"""
 BTN = "button:visible, a:visible, [role='button']:visible"
 
+# who to contact, best first: (rank, label, pattern) — matched against the person's headline
+ROLES = [
+    (1, "Eng leader", r"\b(vp|vice president|head of (engineering|technology|tech|software|product)|cto|"
+                      r"director[^|]{0,30}(engineering|technology|software)|engineering manager|eng(ineering)? mgr|"
+                      r"\bem\b|software development manager|sdm|manager[^|,]*engineering)"),
+    (2, "Recruiter/HR", r"(recruit|talent acquisition|\bta\b|\bhr\b|human resources|people partner|hiring|"
+                        r"people operations|hrbp)"),
+    (3, "Tech lead", r"(tech(nical)? lead|lead engineer|principal|staff engineer|architect)"),
+    (4, "Engineer", r"(engineer|developer|\bsde\b|programmer)"),
+]
+SKIP_RE = re.compile(r"\b(intern|student|aspiring|fresher|seeking|open to work|looking for)\b", re.I)
+
+
+def classify(headline: str) -> tuple[int, str]:
+    if SKIP_RE.search(headline or ""):
+        return 9, "skip"
+    for rank, label, pat in ROLES:
+        if re.search(pat, headline or "", re.I):
+            return rank, label
+    return 8, "other"
+
 
 @dataclass
 class Person:
@@ -61,6 +83,7 @@ class LinkedInOutreach:
         self.human = human
         self.tracker = tracker
         self.my_slug = my_slug
+        self.auto = False          # True while sending a batch you approved once
 
     # --- company + people ----------------------------------------------------------
 
@@ -149,6 +172,88 @@ class LinkedInOutreach:
                 self.human.between_jobs()
         return sent
 
+    def pick_people(self, page, company: str, company_hint: str = "", want: int = 3) -> list[tuple]:
+        """Find people at the company and rank them: engineering leaders, then recruiters/HR, then leads."""
+        url = self.company_url(page, company, company_hint)
+        if not url:
+            console.print(f"[yellow]Could not find {company!r} on LinkedIn.[/]")
+            return []
+        console.print(f"  company page: {url}")
+        people = self.find_people(page, url, company, max(want, 4))
+        ranked = sorted(((classify(p.headline), p) for p in people), key=lambda x: x[0][0])
+        ranked = [(r, p) for r, p in ranked if r[0] < 8]
+        # mix: at least one leader and one recruiter when both exist
+        pick, seen_kinds = [], set()
+        for want_kind in ("Eng leader", "Recruiter/HR"):
+            for r, p in ranked:
+                if r[1] == want_kind and (r, p) not in pick:
+                    pick.append((r, p))
+                    seen_kinds.add(want_kind)
+                    break
+        for r, p in ranked:
+            if len(pick) >= want:
+                break
+            if (r, p) not in pick:
+                pick.append((r, p))
+        return [(r[1], p) for r, p in pick[:want]]
+
+    def run_batch(self, page, company: str, role: str, pitch: Pitch, company_hint: str = "") -> int:
+        """One approval per company: show who will get the note + the note, Enter sends to all."""
+        left = min(self.cfg.get("per_company", 3), self.cfg.get("daily_cap", 20) - self.tracker.outreach_today())
+        if left <= 0:
+            console.print("[yellow]Outreach daily cap reached (config/outreach.yaml: daily_cap).[/]")
+            return 0
+        chosen = self.pick_people(page, company, company_hint, left)
+        if not chosen:
+            dump_debug(page, "outreach-people")
+            console.print("[yellow]No suitable people found.[/]")
+            return 0
+        while True:
+            table = Table(title=f"{company} — will send connection notes to:")
+            for col in ("#", "Name", "Who", "Headline"):
+                table.add_column(col)
+            for i, (kind, p) in enumerate(chosen, 1):
+                table.add_row(str(i), p.name, kind, re.sub(r"^.*?(degree connection|·)\s*", "", p.headline)[:70])
+            console.print(table)
+            preview = fit_note(with_name(pitch.note, chosen[0][1].first_name))
+            console.print(Panel(preview, title=f"Note ({len(preview)}/300) — name changes per person", border_style="magenta"))
+            raw = console.input("[bold cyan][Enter][/] send to all  [cyan]-2[/] remove #2  "
+                                "[cyan]e[/] edit note  [cyan]s[/] skip company  [cyan]q[/] quit > ").strip().lower()
+            if raw == "q":
+                raise QuitRun()
+            if raw == "s":
+                return 0
+            if raw == "e":
+                new = console.input("Note text (use {first_name}; keep under 300) > ").strip()
+                if new:
+                    pitch.note = new.replace("{first_name}", "there")
+                continue
+            if raw.startswith("-") and raw[1:].isdigit() and 1 <= int(raw[1:]) <= len(chosen):
+                chosen.pop(int(raw[1:]) - 1)
+                if not chosen:
+                    return 0
+                continue
+            if raw == "":
+                break
+        sent = 0
+        self.auto = True
+        try:
+            for kind, person in chosen:
+                try:
+                    status, how = self.contact(page, person, pitch)
+                except PlaywrightError as e:
+                    dump_debug(page, "outreach-error")
+                    console.print(f"[red]browser error:[/] {str(e).splitlines()[0][:150]}")
+                    status, how = "failed", "invite"
+                self.tracker.log_outreach(company, role, person.name, person.url, how, status)
+                console.print(f"  {person.name} ({kind}) → [bold]{status}[/]")
+                if status.startswith("sent"):
+                    sent += 1
+                    self.human.between_jobs()
+        finally:
+            self.auto = False
+        return sent
+
     # --- one person --------------------------------------------------------------------
 
     def _top_card(self, page, name_hint: str = ""):
@@ -180,6 +285,8 @@ class LinkedInOutreach:
         if connect:
             return self._invite(page, connect, person, pitch), "invite"
         dump_debug(page, "outreach-noconnect")
+        if self.auto:
+            return "no_connect", "-"     # batch mode never spends InMail credits
         if msg_btn.count() and self.reviewer.choose(
                 "[yellow]No Connect option found.[/] Send a Message instead (may use a Premium InMail credit)? "
                 "[cyan]y[/]/[cyan]n[/]", "yn") == "y":
@@ -297,7 +404,10 @@ class LinkedInOutreach:
             waited += 300
 
     def _review(self, kind: str, person: Person, text: str, subject: str = "", limit: int = 0) -> str | None:
-        """Show the text; returns final text, or None to skip. Raises QuitRun on q."""
+        """Show the text; returns final text, or None to skip. Raises QuitRun on q.
+        In batch mode the note was already approved once for the whole company."""
+        if self.auto:
+            return fit_note(text) if limit else text
         while True:
             body = (f"[dim]Subject:[/] {subject}\n\n" if subject else "") + text
             console.print(Panel(body, title=f"{kind} → {person.name}  ({len(text)} chars)", border_style="magenta"))

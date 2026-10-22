@@ -10,8 +10,9 @@ check data/debug/*.html and update them here.
 """
 import re
 from typing import Iterator
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PWTimeout
 
 from src.core.browser import dump_debug
@@ -31,6 +32,8 @@ SEL = {
     "apply_btn": "#apply-button",
     "company_site_btn": "#company-site-button",
     "already_applied": "#already-applied",
+    "sort_btn": "button#filter-sort",                  # "Sort by: Relevance ▾"
+    "sort_date": "a[data-id='filter-sort-f']",         # dropdown item "Date"
     "chat_drawer": "[class*='chatbot_Drawer']",
     "chat_bot_msg": "li.botItem",
     "chat_text": "div.textArea[contenteditable='true']",
@@ -67,29 +70,78 @@ class NaukriAdapter(SiteAdapter):
         print("Logged in to Naukri.")
 
     def queries(self) -> Iterator[dict]:
-        for q in self.cfg.get("queries") or []:
-            for loc in q.get("locations") or [""]:
-                yield {
-                    "keywords": q["keywords"],
-                    "location": loc,
-                    "experience": q.get("experience"),
-                    "pages": self.cfg.get("pages_per_query", 1),
-                    "job_age": self.cfg.get("job_age_days"),
-                }
+        """Pasted Naukri search links first; else ONE combined search per location with all your stacks
+        (Naukri accepts k='golang developer, java developer, backend development')."""
+        base = {"pages": self.cfg.get("pages_per_query", 1), "job_age": self.cfg.get("job_age_days")}
+        for url in self.cfg.get("search_urls") or []:
+            k = parse_qs(urlsplit(url).query).get("k", [""])[0]
+            yield {**base, "url": url, "keywords": k}
+        qs = self.cfg.get("queries") or []
+        if not qs:
+            return
+        keywords = ", ".join(q["keywords"] for q in qs)
+        for loc in qs[0].get("locations") or [""]:
+            yield {**base, "keywords": keywords, "location": loc, "experience": qs[0].get("experience")}
 
-    def _search_url(self, q: dict, page_no: int) -> str:
-        path = f"{_slug(q['keywords'])}-jobs"
-        if q["location"]:
+    def _search_url(self, q: dict, page_no: int = 1) -> str:
+        """Same shape as Naukri's own search:
+        /golang-developer-java-developer-jobs[-in-pune]?k=golang developer, java developer&experience=2
+          &functionAreaIdGid=3&functionAreaIdGid=5&jobAge=7&sort=f"""
+        if q.get("url"):
+            url = q["url"]
+            parts = urlsplit(url)
+            params = parse_qs(parts.query)
+            if self.cfg.get("sort_by_date", True):
+                params["sort"] = ["f"]
+            if q.get("job_age") and "jobAge" not in params:
+                params["jobAge"] = [str(q["job_age"])]
+            return urlunsplit(parts._replace(query=urlencode(params, doseq=True)))
+        path = "-".join(_slug(k) for k in q["keywords"].split(",") if k.strip()) + "-jobs"
+        if q.get("location"):
             path += f"-in-{_slug(q['location'])}"
-        if page_no > 1:
-            path += f"-{page_no}"
-        params = {k: v for k, v in {"experience": q["experience"], "jobAge": q["job_age"]}.items()
-                  if v is not None}
-        return f"{BASE}/{path}" + (f"?{urlencode(params)}" if params else "")
+        params = {"k": q["keywords"], "l": q.get("location") or None,
+                  "experience": q.get("experience"), "jobAge": q.get("job_age"),
+                  "functionAreaIdGid": self.cfg.get("departments") or None,     # 3 = Engineering - Software & QA
+                  "wfhType": self.cfg.get("work_mode") or None,
+                  "sort": "f" if self.cfg.get("sort_by_date", True) else None}   # f = freshness (Date)
+        params = {k: v for k, v in params.items() if v not in (None, "", [])}
+        return f"{BASE}/{path}?{urlencode(params, doseq=True)}"
+
+    @staticmethod
+    def _page_url(url: str, page_no: int) -> str:
+        """Page N of an (already sorted) results URL: /golang-jobs?… -> /golang-jobs-2?…"""
+        parts = urlsplit(url)
+        path = re.sub(r"-\d+$", "", parts.path.rstrip("/"))
+        return urlunsplit(parts._replace(path=f"{path}-{page_no}" if page_no > 1 else path))
+
+    def _sort_by_date(self, page) -> bool:
+        """Results page: 'Sort by: Recommended' -> 'Date' (newest first)."""
+        try:
+            btn = page.locator(SEL["sort_btn"])
+            if (btn.first.get_attribute("title") or "").lower() == "date":
+                print("  already sorted by date")
+                return True
+            btn.first.click(timeout=5000)
+            page.wait_for_timeout(700)
+            opt = page.locator(SEL["sort_date"])
+            if not opt.count():
+                opt = page.get_by_text(re.compile(r"^\s*Date\s*$")).filter(visible=True)
+            before = page.url
+            opt.first.click(timeout=5000)
+            page.wait_for_timeout(2500)
+            page.wait_for_selector(SEL["card"], timeout=15000)
+            ok = (page.locator(SEL["sort_btn"]).first.get_attribute("title") or "").lower() == "date"
+            print(f"  sorted by date{'' if ok else ' (could not confirm)'}")
+            return True
+        except (PWTimeout, PlaywrightError):
+            print("  could not switch to 'Sort by: Date' — using Naukri's default order")
+            dump_debug(page, "naukri-sort")
+            return False
 
     def search(self, page, query: dict) -> Iterator[Job]:
+        base = self._search_url(query)
         for page_no in range(1, query["pages"] + 1):
-            url = self._search_url(query, page_no)
+            url = base if page_no == 1 else self._page_url(base, page_no)
             print(f"\nSearching: {url}")
             page.goto(url, wait_until="domcontentloaded")
             try:
@@ -98,6 +150,8 @@ class NaukriAdapter(SiteAdapter):
                 print("  no job cards found (end of results, or selectors changed)")
                 dump_debug(page, "naukri-search")
                 return
+            if self.cfg.get("sort_by_date", True):
+                self._sort_by_date(page)         # no-op when ?sort=f already applied; clicks Date otherwise
             self.human.pause()
             jobs = []
             for card in page.locator(SEL["card"]).all():
@@ -113,6 +167,7 @@ class NaukriAdapter(SiteAdapter):
                     location=_text(card.locator(SEL["card_location"])),
                     experience=_text(card.locator(SEL["card_exp"])),
                 ))
+            print(f"  page {page_no}: {len(jobs)} jobs")
             yield from jobs  # collected first so navigating to a job doesn't detach cards
 
     def open_job(self, page, job: Job) -> JobDetail:

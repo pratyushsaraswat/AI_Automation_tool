@@ -3,7 +3,7 @@ import re
 
 # display name -> regex alternatives (lowercase, matched on word-ish boundaries)
 SKILLS: dict[str, list[str]] = {
-    "Java": [r"java(?!\s*script)"], "Spring Boot": [r"spring\s*boot", r"spring"], "Go": [r"golang", r"\bgo\b(?=\s*(?:lang|developer|engineer|microservices?|services|programming|language|[,/|)\n]|$))",
+    "Java": [r"java(?!\s*script)"], "Spring Boot": [r"spring\s*boot", r"spring"], "Go": [r"golang", r"\bgo\b(?=\s*(?:lang|developers?|engineers?|dev|backend|microservices?|services|programming|language|routines|modules|[,/|)\n]|$))",
                                                      r"(?<=[,/|(:]\s)go\b", r"(?<=[,/|(:])go\b"],
     "Python": [r"python"], "JavaScript": [r"javascript", r"\bjs\b", r"es6"], "TypeScript": [r"typescript"],
     "React": [r"react(?:\.?js)?"], "Angular": [r"angular"], "Node.js": [r"node(?:\.?js)?"], "C++": [r"c\+\+"],

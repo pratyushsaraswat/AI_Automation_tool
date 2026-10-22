@@ -1,8 +1,9 @@
 import hashlib
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from rich.console import Console
+from rich.markup import escape
 
 from src.ats import apply_external
 from src.config import Settings
@@ -20,11 +21,101 @@ from src.core.session import ApplySession
 from src.core.tracker import CSV_PATH, Tracker
 from src.outreach.linkedin_outreach import LinkedInOutreach
 from src.outreach.message import build_pitch, write_prep
+from src.outreach.skills import find_skills
 from src.sites.linkedin import LinkedInAdapter
 from src.sites.naukri import NaukriAdapter
 
 ADAPTERS = {"naukri": NaukriAdapter, "linkedin": LinkedInAdapter}
 console = Console()
+
+
+def _defaults(site: str, cfg: dict) -> dict:
+    qs = cfg.get("queries") or []
+    kws = [q["keywords"] for q in qs]
+    if site == "linkedin" and not kws:
+        kws = [parse_qs(urlsplit(u).query).get("keywords", [""])[0] for u in cfg.get("search_urls") or []]
+    locs = (qs[0].get("locations") if qs else None) or []
+    days = cfg.get("job_age_days") or {"day": 1, "week": 7, "month": 30}.get(cfg.get("date_posted"), 7)
+    return {"keywords": [k for k in kws if k], "exp": (qs[0].get("experience") if qs else None) or 2,
+            "locations": [l for l in locs if l], "days": days, "sort": cfg.get("sort_by_date", True)}
+
+
+GENERIC_ROLE_WORDS = {"development", "developer", "engineer", "software", "senior", "junior", "sr", "jr", "backend", "back",
+                      "end", "frontend", "front", "full", "stack", "fullstack", "sde", "programmer", "lead",
+                      "jobs", "job", "remote", "intern", "associate", "application", "web", "and", "or"}
+STACK_ALIASES = {"golang": ["golang", "go"], "go": ["golang", "go"], "node": ["node", "nodejs", "node.js"],
+                 "react": ["react", "reactjs", "react.js"], "dotnet": [".net", "dotnet", "c#"],
+                 "net": [".net", "dotnet", "c#"], "js": ["javascript", "js"]}
+
+
+def stack_terms(keywords: str) -> list[str]:
+    """'golang developer' -> ['golang', 'go'];  'java full stack developer' -> ['java']."""
+    if any(not [w for w in re.findall(r"[a-z0-9+#.]+", k.lower()) if w not in GENERIC_ROLE_WORDS]
+           for k in keywords.split(",") if k.strip()):
+        return []        # a generic role like "backend development" is in the search: don't filter by stack
+    words = [w for w in re.findall(r"[a-z0-9+#.]+", keywords.lower()) if w not in GENERIC_ROLE_WORDS]
+    out = []
+    for w in words:
+        out += STACK_ALIASES.get(w.strip("."), [w])
+    return out
+
+
+def on_stack(terms: list[str], text: str) -> bool:
+    if not terms:
+        return True
+    low = text.lower()
+    for t in terms:
+        if t == "go":                     # plain English "go" -> use the strict Go-language matcher
+            if "Go" in find_skills(text):
+                return True
+        elif re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9#])", low):
+            return True
+    return False
+
+
+def choose_search(site: str, settings: Settings, keywords=None, exp=None, location=None, days=None, ask=True):
+    """Ask which stack / experience / location / freshness to search (or take them from CLI flags)
+    and rewrite this run's search config. Nothing is saved to search.yaml."""
+    cfg = settings.search.setdefault(site, {})
+    d = _defaults(site, cfg)
+    if ask and keywords is None:
+        console.rule(f"[bold]What should I search on {site}?[/] (Enter = keep default)")
+        raw = console.input(escape(f"  Stack / role (comma for several) — or paste a {site} search link "
+                                   f"[{', '.join(d['keywords'])}] > ")).strip()
+        if raw.startswith("http"):
+            cfg["search_urls"], cfg["queries"] = [raw], []
+            raw2 = console.input(escape(f"  Posted within days (1, 3, 7, 15, 30) [{d['days']}] > ")).strip()
+            days = int(raw2) if raw2.isdigit() else d["days"]
+            if site == "naukri":
+                cfg["job_age_days"] = days
+            console.print(f"  → using your link · last {days} day(s) · newest first")
+            return
+        keywords = raw or ", ".join(d["keywords"])
+        raw = console.input(escape(f"  Experience in years [{d['exp']}] > ")).strip()
+        exp = int(raw) if raw.isdigit() else d["exp"]
+        raw = console.input(escape(f"  Locations (comma; '-' = anywhere) [{', '.join(d['locations']) or 'anywhere'}] > ")).strip()
+        location = "" if raw == "-" else (raw or ", ".join(d["locations"]))
+        raw = console.input(escape(f"  Posted within days (1, 3, 7, 15, 30) [{d['days']}] > ")).strip()
+        days = int(raw) if raw.isdigit() else d["days"]
+        raw = console.input(escape(f"  Newest first (sort by date)? [{'Y/n' if d['sort'] else 'y/N'}] > ")).strip().lower()
+        sort = d["sort"] if not raw else raw.startswith("y")
+    else:
+        sort = d["sort"]
+    kws = [k.strip() for k in (keywords if keywords is not None else ", ".join(d["keywords"])).split(",") if k.strip()]
+    exp = d["exp"] if exp is None else exp
+    locs = [l.strip() for l in (location if location is not None else ", ".join(d["locations"])).split(",") if l.strip()]
+    days = d["days"] if days is None else days
+
+    cfg["queries"] = [{"keywords": k, "locations": locs or [""], "experience": exp} for k in kws]
+    cfg["search_urls"] = []
+    cfg["sort_by_date"] = sort
+    if site == "naukri":
+        cfg["job_age_days"] = days
+    else:
+        cfg["date_posted"] = "day" if days <= 1 else "week" if days <= 7 else "month"
+        cfg["experience_levels"] = [1, 2] if exp < 2 else [2, 3] if exp < 5 else [3, 4] if exp < 10 else [4, 5]
+    console.print(f"  → {', '.join(kws)} · {exp} yrs · {', '.join(locs) or 'anywhere'} · last {days} day(s)"
+                  f"{' · newest first' if sort else ''}")
 
 
 def login(site: str, settings: Settings):
@@ -64,6 +155,7 @@ def run(site: str, settings: Settings, limit: int | None, dry_run: bool):
         adapter.ensure_logged_in(page)
         try:
             for query in adapter.queries():
+                terms = stack_terms(query.get("keywords", ""))
                 for job in adapter.search(page, query):
                     if tracker.seen(job):
                         continue
@@ -76,6 +168,11 @@ def run(site: str, settings: Settings, limit: int | None, dry_run: bool):
                             tracker.log(job, skip, apply_via="external" if skip == "external" else "")
                         continue
 
+                    if not on_stack(terms, f"{job.title}\n{detail.description}"):
+                        console.print(f"  [dim]off stack ({'/'.join(terms)} not mentioned): {job.title} — {job.company}[/]")
+                        if not dry_run:
+                            tracker.log(job, "off_stack", note=f"wanted {'/'.join(terms)}")
+                        continue
                     score, reason = matcher.score(detail)
                     kind = "external" if detail.external else site
                     if score < min_score:
@@ -132,23 +229,35 @@ def referral(page, settings: Settings, company: str, role: str, job_text: str, r
     out = LinkedInOutreach(cfg, reviewer, human, tracker, me.group(1) if me else "")
     tab = page.context.new_page()
     try:
-        return out.run(tab, company, role, pitch, company_hint)
+        return out.run_batch(tab, company, role, pitch, company_hint)
     finally:
         tab.close()
         page.bring_to_front()
 
 
-def outreach(settings: Settings, company: str | None, role: str, pending_days: int | None, job_url: str = "",
-             people: list[str] | None = None):
-    """Standalone: `outreach --company X --role Y` or `outreach --pending 7`."""
+def outreach(settings: Settings, companies: list[str] | None, role: str, pending_days: int | None,
+             job_url: str = "", people: list[str] | None = None, job_id: str = "", targets_file: str = ""):
+    """Standalone: `outreach --company A B C [--role R]`, `outreach --pending 7`, `outreach --person URL`."""
+    company = companies[0] if companies else None
     human = Human(settings.search.get("delays", {}))
     tracker = Tracker()
     reviewer = Reviewer(settings.search.get("review", {}))
     resume = load_resume_text(settings.resume_path)
     if people:
         return _contact_people(settings, people, company or "", role, job_url, human, tracker, reviewer, resume)
-    targets = ([(company, role, job_url, "")] if company
-               else [(c, t, u, s) for c, t, u, s in tracker.pending_outreach(pending_days or 7)])
+    default_role = role or settings.outreach.get("default_role", "Software Engineer")
+    if companies:
+        targets = [{"company": c, "job_id": job_id, "job_url": job_url, "role": default_role} for c in companies]
+        return _contact_companies(settings, targets, human, tracker, reviewer, resume)
+    if targets_file:
+        return _contact_companies(settings, parse_targets_file(targets_file, default_role), human, tracker,
+                                  reviewer, resume)
+    if pending_days is None:
+        targets = ask_targets(default_role)
+        if targets:
+            _contact_companies(settings, targets, human, tracker, reviewer, resume)
+        return
+    targets = [(c, t, u, s) for c, t, u, s in tracker.pending_outreach(pending_days or 7)]
     if not targets:
         console.print("Nothing to do: no applied jobs without outreach in that window.")
         return
@@ -165,10 +274,70 @@ def outreach(settings: Settings, company: str | None, role: str, pending_days: i
                     link = page.locator("main a[href*='/company/']:visible").first
                     hint = (link.get_attribute("href") or "") if site == "linkedin" and link.count() else ""
                 referral(page, settings, comp, title, job_text, resume, reviewer, human, tracker,
-                         company_hint=hint, job_url=url, ask=bool(not company))
+                         company_hint=hint, job_url=url, ask=True)
         except QuitRun:
             console.print("Stopped by you.")
     console.print(f"Outreach log: data/outreach.csv")
+
+
+def ask_targets(default_role: str) -> list[dict]:
+    """Interactive: company, job ID, job link, role — repeat until Enter on company."""
+    console.rule("[bold]Referral outreach[/] — Enter on 'Company name' to start sending")
+    targets = []
+    while True:
+        company = console.input(f"\n[bold]Company name[/] {'(Enter = start)' if targets else ''} > ").strip()
+        if not company:
+            break
+        job_id = console.input("  Job ID (Enter if none) > ").strip()
+        job_url = console.input("  Job link (Enter if none) > ").strip()
+        role = console.input(f"  Role [{default_role}] > ").strip() or default_role
+        targets.append({"company": company, "job_id": job_id, "job_url": job_url, "role": role})
+        console.print(f"  [green]added[/] {company} · {role}" + (f" · Job ID {job_id}" if job_id else "")
+                      + (" · link" if job_url else ""))
+    return targets
+
+
+def parse_targets_file(path: str, default_role: str) -> list[dict]:
+    """companies.txt — one per line:  Company | job id | job link | role   (only Company is required)."""
+    out = []
+    for line in open(path):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = [x.strip() for x in line.split("|")] + ["", "", ""]
+        out.append({"company": parts[0], "job_id": parts[1], "job_url": parts[2], "role": parts[3] or default_role})
+    return out
+
+
+def _contact_companies(settings, targets: list[dict], human, tracker, reviewer, resume):
+    """For each target find eng leaders + recruiters/HR, approve once per company, send all."""
+    cfg = settings.outreach
+    me = re.search(r"/in/([^/?#]+)", settings.profile.get("personal", {}).get("linkedin_url", "") or "")
+    out = LinkedInOutreach(cfg, reviewer, human, tracker, me.group(1) if me else "")
+    total = 0
+    with open_browser() as page:
+        LinkedInAdapter(settings.search, human).ensure_logged_in(page)
+        try:
+            for i, t in enumerate(targets, 1):
+                comp, role, job_id, job_url = t["company"], t["role"], t.get("job_id", ""), t.get("job_url", "")
+                console.rule(f"[bold]{i}/{len(targets)} · {comp}[/] — {role}" + (f" (Job ID {job_id})" if job_id else ""))
+                job_text, hint = "", ""
+                if job_url:
+                    page.goto(job_url, wait_until="domcontentloaded")
+                    page.wait_for_timeout(3000)
+                    job_text = page.locator("body").inner_text()[:8000]
+                    link = page.locator("main a[href*='/company/']:visible").first
+                    hint = (link.get_attribute("href") or "") if "linkedin.com" in job_url and link.count() else ""
+                applied = bool(job_id or job_url)
+                pitch = build_pitch(cfg, role, comp, job_text, resume, general=not applied, job_id=job_id)
+                if job_text:
+                    console.print(f"  prep notes: {write_prep(pitch, role, comp, job_text, job_url)}")
+                total += out.run_batch(page, comp, role, pitch, hint)
+                if out.tracker.outreach_today() >= cfg.get("daily_cap", 20):
+                    console.print("[yellow]Daily cap reached — stopping.[/]")
+                    break
+        except QuitRun:
+            console.print("Stopped by you.")
+    console.print(f"Sent {total} connection notes. Log: data/outreach.csv")
 
 
 def _contact_people(settings, urls, company, role, job_url, human, tracker, reviewer, resume):

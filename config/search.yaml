@@ -1,16 +1,18 @@
 naukri:
-  queries:
-    - keywords: "java full stack developer"
-      locations: ["mumbai", "bangalore", "pune"]
-      experience: 2
-    - keywords: "java spring boot developer"
-      locations: ["mumbai", "bangalore", "pune"]
-      experience: 2
+  # Easiest: set filters on naukri.com and paste the URL here (used instead of queries below).
+  search_urls: []
+  #  - "https://www.naukri.com/golang-developer-java-developer-backend-development-jobs?k=golang%20developer%2C%20java%20developer%2C%20backend%20development&experience=2&functionAreaIdGid=3&functionAreaIdGid=5"
+  queries:                 # all keywords go into ONE Naukri search (comma-separated), like the site does
     - keywords: "golang developer"
-      locations: ["mumbai", "bangalore", "pune"]
+      locations: [""]      # "" = anywhere
       experience: 2
-  job_age_days: 7        # only jobs posted in the last N days (1, 3, 7, 15, 30)
-  pages_per_query: 2     # ~20 jobs per page
+    - keywords: "java developer"
+    - keywords: "backend development"
+  departments: [3, 5]      # functionAreaIdGid: 3 = Engineering - Software & QA, 5 = Data Science & Analytics; [] = all
+  work_mode: []            # wfhType: 0 = office, 2 = remote, 3 = hybrid; [] = all
+  job_age_days: 7          # only jobs posted in the last N days (1, 3, 7, 15, 30)
+  pages_per_query: 3       # 20 jobs per page
+  sort_by_date: true
 
 linkedin:
   # Easiest: build the search in LinkedIn (filters: Past 24 hours, Easy Apply, ...) and paste the URL here.
@@ -31,7 +33,7 @@ external:
   enabled: true          # apply on company sites (Greenhouse/Lever auto-filled, others assisted)
 
 limits:
-  daily_cap: 25          # max applications per site per day
+  daily_cap: 250          # max applications per site per day
   daily_cap_by_site:
     linkedin: 15         # LinkedIn flags bursts — keep lower
   min_match_score: 60    # 0-100; jobs below this are skipped

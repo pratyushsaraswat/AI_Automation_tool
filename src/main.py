@@ -15,13 +15,20 @@ def main():
     r.add_argument("--site", choices=list(runner.ADAPTERS), default="naukri")
     r.add_argument("--limit", type=int, help="max applications this run")
     r.add_argument("--dry-run", action="store_true", help="search + score only, never click Apply")
+    r.add_argument("--keywords", help='stack / role, comma for several: "golang developer, java developer"')
+    r.add_argument("--exp", type=int, help="years of experience")
+    r.add_argument("--location", help='comma-separated cities; "" = anywhere')
+    r.add_argument("--days", type=int, help="posted within N days (1, 3, 7, 15, 30)")
+    r.add_argument("--no-ask", action="store_true", help="don't ask, use search.yaml (+ flags)")
 
     ap = sub.add_parser("apply", help="apply to job links you give (Workday, Greenhouse, Lever, any site)")
     ap.add_argument("--url", nargs="+", default=[], help="one or more job links")
     ap.add_argument("--file", help="text file with one job link per line")
 
     ou = sub.add_parser("outreach", help="message people at a company on LinkedIn for a referral")
-    ou.add_argument("--company", help="company name (omit with --pending)")
+    ou.add_argument("--company", nargs="+", default=[], help='one or more companies: --company "Google" "Atlassian"')
+    ou.add_argument("--file", help="companies file, one per line:  Company | job id | job link | role")
+    ou.add_argument("--job-id", default="", help="job ID to mention in the note")
     ou.add_argument("--role", default="", help="role you applied for")
     ou.add_argument("--job-url", default="", help="job link (used to tailor the message to its skills)")
     ou.add_argument("--pending", type=int, metavar="DAYS", help="all applied jobs in last DAYS with no outreach yet")
@@ -59,9 +66,9 @@ def main():
         return
     settings = load_settings()
     if args.cmd == "outreach":
-        if not args.company and args.pending is None:
-            p.error("give --company NAME [--role R --job-url URL] or --pending DAYS")
-        runner.outreach(settings, args.company, args.role, args.pending, args.job_url, args.person)
+        # no options at all -> interactive: asks company, job ID, job link, role
+        runner.outreach(settings, list(args.company), args.role, args.pending, args.job_url, args.person,
+                        args.job_id, args.file or "")
     elif args.cmd == "apply":
         urls = list(args.url)
         if args.file:
@@ -72,6 +79,8 @@ def main():
     elif args.cmd == "login":
         runner.login(args.site, settings)
     else:
+        runner.choose_search(args.site, settings, args.keywords, args.exp, args.location, args.days,
+                             ask=not args.no_ask)
         runner.run(args.site, settings, args.limit, args.dry_run)
 
 

@@ -45,6 +45,8 @@ acquisition, engineering managers). Message is tailored to the job's skills that
 `data/prep/<date>-<company>-<role>.md` lists what to revise. You approve every message.
 ```bash
 python -m src.main outreach --pending 7                     # all recent applications, no outreach yet
+python -m src.main outreach --company "Atlassian" "Razorpay" "Zepto"     # no job needed: eng leaders + HR
+python -m src.main outreach --file companies.txt --role "Backend Engineer"   # one company per line
 python -m src.main outreach --company "Acme" --role "Backend Engineer" --job-url "https://..."
 ```
 Settings + message templates: `config/outreach.yaml` (daily_cap 10, per_company 2, mode send|draft).

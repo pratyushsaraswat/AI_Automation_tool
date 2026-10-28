@@ -1,7 +1,7 @@
 # Job Apply Assistant
 
 Searches jobs, scores them against your resume, fills applications — **you approve each one**.
-Sites: Naukri, LinkedIn (Easy Apply + external), company sites: Greenhouse & Lever (auto-fill),
+Sites: Naukri, LinkedIn (Easy Apply + external), MyCareernet, TeamLease Digital, Randstad India, company sites: Greenhouse & Lever (auto-fill),
 any other site (assisted: fills what it can, you submit).
 
 ## Setup
@@ -25,10 +25,26 @@ python -m src.main report                    # history
 python -m src.main login --site linkedin
 python -m src.main run --site linkedin --dry-run
 python -m src.main run --site linkedin --limit 5
+python -m src.main login --site mycareernet
+python -m src.main run --site mycareernet --auto --limit 20
+python -m src.main login --site teamlease
+python -m src.main run --site teamlease --auto --limit 20
+python -m src.main login --site randstad
+python -m src.main run --site randstad --auto --limit 20
 python -m src.main apply --url "https://acme.wd5.myworkdayjobs.com/..."   # any job link (Workday etc.)
 python -m src.main apply --file links.txt   # one link per line
 python -m src.main export --applied-only     # data/applications.csv (also auto-updated after every job)
 ```
+
+## Max-apply mode
+```bash
+python -m src.main run --site linkedin --auto      # Easy Apply + company-site jobs
+python -m src.main run --site naukri --auto
+python -m src.main apply --queued                  # then: company sites that need you (tool learns them)
+python -m src.main outreach --pending 1            # then: referral notes for today's applications
+```
+`--auto`: no per-job confirm; submits when every answer is known (profile / memory / prefilled);
+still asks for anything unknown; unknown company sites + Workday logins are queued, not blocking.
 
 ## External (company-site) applications
 LinkedIn "Apply" / Naukri "Apply on company site" open the company site in a new tab, then:
@@ -37,7 +53,7 @@ LinkedIn "Apply" / Naukri "Apply on company site" open the company site in a new
 | Greenhouse (incl. embedded iframe) | form filled, full summary, you press Enter to submit |
 | Lever | same; solve hCaptcha yourself if shown |
 | Workday | Apply → Autofill with Resume → you sign in → each page filled + shown, Enter = Save & Continue → stops at Review, **you submit** |
-| Anything else (custom) | visible form filled with known answers; you finish + submit, press `d` |
+| Anything else (custom) | clicks "Apply now" on job pages, fills known answers, **records what you type** → saved to memory for every future site; per-site notes in `data/site_knowledge.json` |
 
 ## Referral outreach (LinkedIn)
 After each application the tool offers to message people at that company (recruiters, talent

@@ -28,6 +28,9 @@ SEL = {
     "card_company": "a.comp-name",
     "card_location": ".locWdth",
     "card_exp": ".expwdth",
+    "card_tags": "ul.tags-gt li",
+    "card_snippet": "span.job-desc",
+    "key_skills": "[class*='key-skill'] [class*='chip']",
     "jd": "[class*='dang-inner-html'], .job-desc",
     "apply_btn": "#apply-button",
     "company_site_btn": "#company-site-button",
@@ -38,16 +41,22 @@ SEL = {
     "chat_bot_msg": "li.botItem",
     "chat_text": "div.textArea[contenteditable='true']",
     "chat_radio": ".ssrc__radio-btn-container",
+    "chat_radio_label": ".ssrc__radio-btn-container label",   # options are labels; nested boxes made blanks
     "chat_checkbox": ".mcc__checkbox, .multicheckboxes-container label",
     "chat_chip": ".chatbot_Chip",
     "chat_send": ".sendMsg",
     "chat_close": "[class*='chatbot_Drawer'] [class*='crossIcon']",
 }
+ACK_RE = re.compile(r"^(got it|great|thanks?|thank you|no worries|okay|ok|noted|perfect|awesome|sure|"
+                    r"alright|cool)\b[!. ]*", re.I)
+CHIP_NOISE = re.compile(r"^(i made a mistake|skip this question|skip)$", re.I)   # bot controls, not answers
 SUCCESS_RE = re.compile(r"successfully applied|applied successfully|application sent|^\s*Applied to\b", re.I)
 
 
 def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    """Naukri's URL words: 'C++ Developer' -> 'c-plus-plus-developer', 'C#' -> 'c-sharp', '.NET' -> 'dot-net'."""
+    text = text.lower().replace("c++", "c plus plus").replace("c#", "c sharp").replace(".net", " dot net")
+    return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
 
 
 def _text(locator) -> str:
@@ -166,6 +175,8 @@ class NaukriAdapter(SiteAdapter):
                     company=_text(card.locator(SEL["card_company"])),
                     location=_text(card.locator(SEL["card_location"])),
                     experience=_text(card.locator(SEL["card_exp"])),
+                    tags=[t.strip() for t in card.locator(SEL["card_tags"]).all_inner_texts() if t.strip()],
+                    snippet=_text(card.locator(SEL["card_snippet"])),
                 ))
             print(f"  page {page_no}: {len(jobs)} jobs")
             yield from jobs  # collected first so navigating to a job doesn't detach cards
@@ -178,9 +189,12 @@ class NaukriAdapter(SiteAdapter):
         except PWTimeout:
             dump_debug(page, "naukri-job")
         self.human.pause()
+        skills = [t.strip() for t in page.locator(SEL["key_skills"]).all_inner_texts() if t.strip()]
+        if skills:
+            job.tags = skills
         return JobDetail(
             job=job,
-            description=_text(page.locator(SEL["jd"])),
+            description=_text(page.locator(SEL["jd"])) + ("\nKey skills: " + ", ".join(skills) if skills else ""),
             external=page.locator(SEL["company_site_btn"]).count() > 0
             and page.locator(SEL["apply_btn"]).count() == 0,
             already_applied=page.locator(SEL["already_applied"]).count() > 0,
@@ -213,71 +227,117 @@ class NaukriAdapter(SiteAdapter):
                 or page.locator(SEL["already_applied"]).count() > 0)
 
     def _chatbot(self, page, session: ApplySession) -> str:
-        last_q, repeats, idle = None, 0, 0
+        """Answer the chat one question at a time. A question = a NEW bot message (by position, not text)
+        that isn't an acknowledgement and whose answer controls have rendered. This keeps answers in sync
+        with questions (reading too early used to send each answer to the next question)."""
+        answered, idle = 0, 0                      # number of bot messages already handled
         for _ in range(40):
-            if self._applied(page):
+            got = self._wait_question(page, answered)
+            if got == "APPLIED":
                 return "applied"
-            if not page.locator(SEL["chat_drawer"]).first.is_visible():
-                idle += 1
-                if idle > 4:
-                    dump_debug(page, "naukri-apply-unknown")
-                    return "unknown"
-                page.wait_for_timeout(1500)
-                continue
+            if got is None:
+                if self._applied(page):
+                    return "applied"
+                if not page.locator(SEL["chat_drawer"]).first.is_visible():
+                    idle += 1
+                    if idle > 2:
+                        dump_debug(page, "naukri-apply-unknown")
+                        return "unknown"
+                    continue
+                dump_debug(page, "naukri-chat-stuck")
+                return "failed"
             idle = 0
-
-            msgs = page.locator(SEL["chat_bot_msg"])
-            question = msgs.nth(msgs.count() - 1).inner_text().strip() if msgs.count() else ""
-            if not question or question == last_q:
-                repeats += 1
-                if repeats >= 4:
-                    dump_debug(page, "naukri-chat-stuck")
-                    return "failed"
-                page.wait_for_timeout(1500)
-                continue
-            repeats = 0
-
+            count, question = got
             field = self._detect_field(page, question)
+            answered = count
             if field is None:
-                page.wait_for_timeout(1500)
                 continue
             value = session.answer(field)
             self._fill(page, field, value)
-            last_q = question
-            page.wait_for_timeout(2000)
         return "failed"
 
+    def _has_input(self, page) -> bool:
+        if (page.locator(SEL["chat_radio_label"]).filter(visible=True).count()
+                or page.locator(SEL["chat_checkbox"]).filter(visible=True).count()
+                or page.locator(SEL["chat_chip"]).filter(visible=True).count()):
+            return True
+        box = page.locator(SEL["chat_text"])
+        return box.count() > 0 and box.first.is_visible()
+
+    def _wait_question(self, page, answered: int, timeout_ms: int = 15000):
+        """Wait for a new, settled bot question after the `answered` bot messages.
+        Returns (bot message count, question text), 'APPLIED', or None on timeout."""
+        waited = 0
+        while waited < timeout_ms:
+            if self._applied(page):
+                return "APPLIED"
+            msgs = page.locator(SEL["chat_bot_msg"])
+            n = msgs.count()
+            if n > answered:
+                text = " ".join(msgs.nth(n - 1).inner_text().split())
+                if text and not ACK_RE.match(text) and self._has_input(page):
+                    page.wait_for_timeout(700)                  # let options finish rendering
+                    if page.locator(SEL["chat_bot_msg"]).count() == n:
+                        return n, text
+                    continue
+            page.wait_for_timeout(400)
+            waited += 400
+        return None
+
+    @staticmethod
+    def _texts(loc) -> list[str]:
+        out = []
+        for t in loc.filter(visible=True).all_inner_texts():
+            t = " ".join(t.split())
+            if t and t not in out and not CHIP_NOISE.match(t):
+                out.append(t)
+        return out
+
     def _detect_field(self, page, question: str) -> Field | None:
-        radios = page.locator(SEL["chat_radio"])
-        if radios.count():
-            return Field(question, "radio", [r.inner_text().strip() for r in radios.all()])
-        checks = page.locator(SEL["chat_checkbox"])
-        if checks.count():
-            return Field(question, "checkbox", [c.inner_text().strip() for c in checks.all()])
-        chips = page.locator(SEL["chat_chip"])
-        if chips.count():
-            return Field(question, "chips", [c.inner_text().strip() for c in chips.all()])
+        radios = self._texts(page.locator(SEL["chat_radio_label"]))
+        if radios:
+            return Field(question, "radio", radios, required=True)
+        checks = self._texts(page.locator(SEL["chat_checkbox"]))
+        if checks:
+            return Field(question, "checkbox", checks, required=True)
+        chips = self._texts(page.locator(SEL["chat_chip"]))
+        if chips:
+            return Field(question, "chips", chips, required=True)
         box = page.locator(SEL["chat_text"])
         if box.count() and box.first.is_visible():
-            return Field(question, "text")
+            return Field(question, "text", required=True)
         return None          # bot message with nothing to answer ("Thank you for your responses")
 
     def _fill(self, page, field: Field, value: str):
         self.human.pause()
+        exact = re.compile(rf"^\s*{re.escape(value)}\s*$", re.I)
         if field.kind == "radio":
-            page.locator(SEL["chat_radio"]).filter(has_text=value).first.click()
+            lab = page.locator(SEL["chat_radio_label"]).filter(visible=True).filter(has_text=exact)
+            if not lab.count():
+                lab = page.locator(SEL["chat_radio_label"]).filter(visible=True).filter(has_text=value)
+            lab.first.click()
         elif field.kind == "checkbox":
             for v in [x.strip() for x in value.split(",") if x.strip()]:
-                page.locator(SEL["chat_checkbox"]).filter(has_text=v).first.click()
+                page.locator(SEL["chat_checkbox"]).filter(visible=True).filter(has_text=v).first.click()
                 self.human.pause()
         elif field.kind == "chips":
-            page.locator(SEL["chat_chip"]).filter(has_text=value).first.click()
+            chip = page.locator(SEL["chat_chip"]).filter(visible=True).filter(has_text=exact)
+            if not chip.count():
+                chip = page.locator(SEL["chat_chip"]).filter(visible=True).filter(has_text=value)
+            box = page.locator(SEL["chat_text"])
+            if chip.count():
+                chip.first.click()
+            elif box.count() and box.first.is_visible():   # your answer isn't a button -> type it
+                self.human.type(box.first, value)
+            else:
+                raise PlaywrightError(f"no option {value!r} in chat")
         else:
             self.human.type(page.locator(SEL["chat_text"]).first, value)
         self.human.pause()
         send = page.locator(SEL["chat_send"]).first
         if send.count() and send.is_visible():
             send.click()
+        page.wait_for_timeout(800)
 
     def _close_chat(self, page):
         close = page.locator(SEL["chat_close"]).first

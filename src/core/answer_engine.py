@@ -80,6 +80,12 @@ def _closest_option(value: str, options: list[str]) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
+# built-in profile keys that also appear inside unrelated questions ("Name of your college",
+# "Why this company?") — they only answer short field labels
+AMBIGUOUS_BUILTIN = {"name", "company", "organization", "location", "city", "website", "portfolio",
+                     "job title", "current title", "current employer", "full name"}
+
+
 class AnswerEngine:
     def __init__(self, profile: dict, resume_text: str, llm: LLM | None):
         self.profile = profile
@@ -114,6 +120,8 @@ class AnswerEngine:
         return {
             "name": p.get("full_name"), "full name": p.get("full_name"),
             "first name": name[0] if name else "", "last name": name[-1] if len(name) > 1 else "",
+            "given name": name[0] if name else "", "family name": name[-1] if len(name) > 1 else "",
+            "surname": name[-1] if len(name) > 1 else "",
             "email": p.get("email"), "phone": p.get("phone"), "mobile": p.get("phone"),
             "phone number": p.get("phone"), "mobile phone number": p.get("phone"),
             "linkedin": p.get("linkedin_url"), "linkedin profile": p.get("linkedin_url"),
@@ -127,10 +135,14 @@ class AnswerEngine:
     def _from_profile(self, f: Field) -> Answer | None:
         label_words = _words(f.label)
         best = None
-        answers = {**self._builtin_answers(), **(self.profile.get("answers") or {})}
+        builtin = self._builtin_answers()
+        answers = {**builtin, **(self.profile.get("answers") or {})}
+        short_label = len(re.findall(r"[a-z]+", f.label.lower())) <= 3   # "Company", "Current company name"
         for key, value in answers.items():
             if value in ("", None):
                 continue
+            if key in AMBIGUOUS_BUILTIN and key not in (self.profile.get("answers") or {}) and not short_label:
+                continue        # "company" must not answer "Why do you want to work at a fintech company?"
             rank = (len(_words(key)), len(key))  # most specific key wins
             if (_words(key) <= label_words and not _too_generic(key, f.label)
                     and (best is None or rank > best[0])):

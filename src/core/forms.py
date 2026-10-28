@@ -77,7 +77,7 @@ SCAN_JS = r"""
   for (const el of root.querySelectorAll('input, select, textarea')) {
     if (done.has(el) || el.disabled) continue;
     const type = (el.getAttribute('type') || el.tagName).toLowerCase();
-    if (['hidden', 'submit', 'button', 'image', 'reset'].includes(type)) continue;
+    if (['hidden', 'submit', 'button', 'image', 'reset', 'password'].includes(type)) continue;   // never passwords
     const id = 'jb' + (n++);
 
     if (type === 'radio' || type === 'checkbox') {
@@ -148,6 +148,49 @@ class Control:
     source: str = ""          # prefilled | profile/cache/llm/user | file | skipped
 
 
+CAPTCHA_JS = r"""() => {
+  const vis = el => !!(el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden';
+  // a visible "I'm not a robot" box (reCAPTCHA / hCaptcha / Turnstile) whose answer is still empty
+  const boxes = [...document.querySelectorAll("iframe[src*='recaptcha/api2/anchor'], iframe[src*='recaptcha/enterprise/anchor'], "
+                + "iframe[src*='hcaptcha.com'], iframe[src*='challenges.cloudflare.com']")]
+    .filter(f => vis(f) && !/size=invisible/.test(f.src));
+  if (!boxes.length) return false;
+  const answers = [...document.querySelectorAll("[name='g-recaptcha-response'], [name='h-captcha-response'], "
+                  + "[name='cf-turnstile-response']")];
+  return !answers.length || answers.every(a => !a.value);
+}"""
+CAPTCHA_ERR_RE = re.compile(r"not a robot|recaptcha is required|captcha (is )?required|complete the captcha", re.I)
+
+
+def captcha_pending(page) -> bool:
+    try:
+        return bool(page.evaluate(CAPTCHA_JS))
+    except PlaywrightError:
+        return False
+
+
+def wait_captcha(page, force: bool = False, minutes: int = 5):
+    """A captcha is waiting -> beep, wait until you solve it in the browser (polls, no Enter needed)."""
+    if not captcha_pending(page):
+        if force:   # site says "captcha required" but the box isn't one we can watch
+            console.input("[bold yellow]Captcha — solve it in the browser, then press Enter[/] > ")
+        return
+    print("\a", end="")
+    console.print("[bold yellow]Captcha — tick \"I'm not a robot\" / solve it in the browser. "
+                  "Waiting (continues by itself)...[/]")
+    page.bring_to_front()
+    for _ in range(minutes * 60):
+        page.wait_for_timeout(1000)
+        try:
+            if not captcha_pending(page) and not page.locator(
+                    "iframe[src*='recaptcha/api2/bframe']").filter(visible=True).count():
+                console.print("  [green]captcha done[/]")
+                return
+        except PlaywrightError:
+            return
+    console.print("[yellow]  captcha not solved in time[/]")
+
+
 def _clean_label(label: str) -> str:
     label = re.sub(r"\s*Select One\b", "", label.strip(), flags=re.I)
     label = re.sub(r"\s*\*\s*$|\s*\(required\)\s*$|\s*Required\s*$", "", label, flags=re.I).strip()
@@ -166,12 +209,14 @@ def _closest(value: str, options: list[str]) -> str | None:
 
 
 class FormFiller:
-    def __init__(self, session: ApplySession, upload: str = "always", all_required: bool = False):
+    def __init__(self, session: ApplySession, upload: str = "always", all_required: bool = False,
+                 known_only: bool = False):
         """upload: 'always' = attach resume to empty resume inputs; 'on_error' = only when the site
         complains (LinkedIn already keeps your resume)."""
         self.s = session
         self.upload = upload
         self.all_required = all_required     # LinkedIn often doesn't mark required questions in the DOM
+        self.known_only = known_only         # unknown sites: fill only known answers, you type the rest in the browser
 
     # --- scan ----------------------------------------------------------------
 
@@ -223,7 +268,7 @@ class FormFiller:
                 else:
                     c.value, c.source = c.current, "prefilled"
                 continue
-            if not f.required and not redo:
+            if (self.known_only or not f.required) and not redo:
                 value = self.s.answer(f, optional=True)       # only fill optional fields we already know
                 if value is None:
                     c.source = "skipped"
@@ -340,11 +385,21 @@ class FormFiller:
                           c.source)
         console.print(table)
 
+    @staticmethod
+    def all_known(controls: list[Control]) -> bool:
+        """Nothing failed and no required field is empty. (Any answer that wasn't already known was
+        shown to you while filling, so everything that got here is approved.)"""
+        return all(c.source != "FAILED" and not (c.field.required and not c.value and c.field.kind != "file")
+                   for c in controls)
+
     def review_edits(self, root, controls: list[Control], title: str, action: str = "SUBMIT",
                      editable: bool = True, extra: str = "") -> str:
         """Show the table, let the user edit fields by number. Returns '' (Enter) or an extra letter."""
         while True:
             self.summary(controls, title)
+            if self.s.reviewer.auto_submit and self.all_known(controls):
+                console.print(f"  [green]auto:[/] every answer known → {action}")
+                return ""
             hint = "number = edit field  " if editable else ""
             raw = console.input(f"[bold cyan][Enter][/] {action}  {hint}{extra}s skip  q quit > ").strip().lower()
             if raw == "q":
@@ -371,15 +426,17 @@ class FormFiller:
         """Show everything, allow edits, click submit, verify. Returns applied | failed."""
         for attempt in range(3):
             self.review_edits(root, controls, title, "SUBMIT", editable)
+            wait_captcha(root.page)
             self.s.human.pause()
             submit.click()
             outcome = self._wait_outcome(root, success)
             if outcome == "applied":
                 return "applied"
             if outcome == "captcha":
-                console.input("[yellow]Captcha shown — solve it in the browser, then press Enter[/] > ")
+                wait_captcha(root.page, force=True)
                 if self._wait_outcome(root, success, seconds=10) == "applied":
                     return "applied"
+                continue   # captcha solved -> click submit again
             if outcome == "errors":
                 console.print("[yellow]Site rejected some fields — re-asking those.[/]")
                 controls = self.fill(root, force_invalid=True)
@@ -394,8 +451,10 @@ class FormFiller:
             try:
                 if success():
                     return "applied"
-                if page.locator("iframe[src*='hcaptcha'], iframe[src*='recaptcha/api2/bframe']").filter(
+                if captcha_pending(page) or page.locator("iframe[src*='recaptcha/api2/bframe']").filter(
                         visible=True).count():
+                    return "captcha"
+                if CAPTCHA_ERR_RE.search(page.locator("body").inner_text(timeout=3000)):
                     return "captcha"
                 if root.locator("[aria-invalid='true']:visible, .error:visible, .field-error:visible").count():
                     return "errors"

@@ -10,6 +10,8 @@ class Job:
     url: str
     location: str = ""
     experience: str = ""
+    tags: list[str] = field(default_factory=list)   # skills shown on the search card (Naukri key skills)
+    snippet: str = ""                               # short description shown on the search card
 
 
 @dataclass
@@ -20,6 +22,7 @@ class JobDetail:
     already_applied: bool = False
     closed: bool = False           # no longer accepting applications
     company_url: str = ""          # LinkedIn company page, when known (used for referral outreach)
+    skip_reason: str = ""          # adapter says skip (e.g. "too_senior"), logged with this status
 
 
 @dataclass

@@ -45,11 +45,16 @@ class Tracker:
                 self.db.execute(f"ALTER TABLE applications ADD COLUMN {col} {typ}")
         self.db.commit()
 
-    def seen(self, job: Job) -> bool:
+    RETRYABLE = ("low_match", "off_stack", "failed", "abandoned", "unknown")
+
+    def seen(self, job: Job, retry: bool = False) -> bool:
+        """Already handled? With retry=True, jobs that were only skipped/failed count as new."""
         row = self.db.execute(
-            "SELECT 1 FROM applications WHERE site=? AND job_id=?", (job.site, job.id)
+            "SELECT status FROM applications WHERE site=? AND job_id=?", (job.site, job.id)
         ).fetchone()
-        return row is not None
+        if row is None:
+            return False
+        return not (retry and row[0] in self.RETRYABLE)
 
     def log(self, job: Job, status: str, score: int | None = None, note: str = "",
             apply_via: str = "", external_url: str = ""):

@@ -12,7 +12,7 @@ LinkedIn is strict about automation: keep daily_cap low (~15) and delays human.
 """
 import re
 from typing import Iterator
-from urllib.parse import urlencode, urljoin
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PWTimeout
@@ -89,18 +89,33 @@ class LinkedInAdapter(SiteAdapter):
             params["f_TPR"] = DATE_POSTED[self.cfg["date_posted"]]
         if self.cfg.get("experience_levels"):
             params["f_E"] = ",".join(str(x) for x in self.cfg["experience_levels"])
-        if self.cfg.get("easy_apply_only", True):
+        if self.cfg.get("easy_apply_only", False):
             params["f_AL"] = "true"
         if self.cfg.get("sort_by_date", True):
             params["sortBy"] = "DD"          # most recent first
         return f"{BASE}/jobs/search-results/?{urlencode(params)}"
 
+    TRACKING = {"currentJobId", "eBP", "refId", "trackingId", "origin", "referralSearchId", "geoId_ref"}
+
+    def clean_url(self, url: str) -> str:
+        """Pasted LinkedIn link -> drop tracking params; add the entry-level filter (f_E) and
+        newest-first sort when the link doesn't set them."""
+        parts = urlsplit(url)
+        params = {k: v for k, v in parse_qs(parts.query).items() if k not in self.TRACKING}
+        if "f_E" not in params and self.cfg.get("experience_levels"):
+            params["f_E"] = [",".join(str(x) for x in self.cfg["experience_levels"])]
+        if self.cfg.get("sort_by_date", True) and "sortBy" not in params:
+            params["sortBy"] = ["DD"]
+        if self.cfg.get("easy_apply_only") and "f_AL" not in params:
+            params["f_AL"] = ["true"]
+        return urlunsplit(parts._replace(query=urlencode(params, doseq=True)))
+
     def search(self, page, query: dict) -> Iterator[Job]:
-        url = re.sub(r"[?&]currentJobId=\d+", "", query["url"]).replace("search-results/&", "search-results/?")
+        url = self.clean_url(query["url"])
         print(f"\nSearching: {url}")
         page.goto(url, wait_until="domcontentloaded")
         self.search_url = url
-        easy_only = self.cfg.get("easy_apply_only", True)
+        easy_only = self.cfg.get("easy_apply_only", False)
         for page_no in range(1, self.cfg.get("pages_per_query", 1) + 1):
             if page_no > 1 and not self._goto_page(page, page_no):
                 return

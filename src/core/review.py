@@ -13,16 +13,27 @@ class Reviewer:
         self.confirm_before_apply = review_cfg.get("confirm_before_apply", True)
         self.auto_accept_known = review_cfg.get("auto_accept_known", True)
         self.threshold = float(review_cfg.get("auto_accept_confidence", 0.85))
+        self.auto_submit = review_cfg.get("auto_submit_known", False)   # --auto: submit when nothing is unknown
 
-    def confirm_apply(self, detail: JobDetail, score: int, reason: str) -> bool:
+    def confirm_apply(self, detail: JobDetail, score: int, reason: str, low_match: bool = False) -> bool:
+        """low_match: score is under min_match_score but the title is a software role — always ask,
+        and default to skip so a stray Enter doesn't apply."""
         job = detail.job
         where = "[magenta]external — company site[/]" if detail.external else f"[green]{job.site}[/]"
+        color = "yellow" if low_match else "bold"
         console.print(Panel(
             f"[bold]{job.title}[/] — {job.company}   ({where})\n"
             f"{job.location} · {job.experience}\n"
-            f"Match: [bold]{score}[/]/100 — {reason}\n{job.url}",
-            title="Job", border_style="cyan",
+            f"Match: [{color}]{score}[/]/100 — {reason}\n{job.url}",
+            title="Job — [yellow]LOW MATCH[/]" if low_match else "Job",
+            border_style="yellow" if low_match else "cyan",
         ))
+        if low_match:
+            choice = console.input("Low match — apply anyway? [cyan]y[/] apply  [cyan][Enter][/] skip  "
+                                   "[cyan]q[/] quit > ").strip().lower()
+            if choice == "q":
+                raise QuitRun()
+            return choice == "y"
         if not self.confirm_before_apply:
             return True
         choice = console.input("[cyan][Enter][/] apply  [cyan]s[/] skip  [cyan]q[/] quit > ").strip().lower()
@@ -69,3 +80,5 @@ class Reviewer:
                 return f.options[int(raw) - 1]
             if raw:
                 return raw
+            console.print("  [yellow]No answer yet — type it" + (" or an option number" if f.options else "")
+                          + ", or s to skip this job.[/]")

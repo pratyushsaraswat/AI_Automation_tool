@@ -17,17 +17,55 @@ naukri:
 linkedin:
   # Easiest: build the search in LinkedIn (filters: Past 24 hours, Easy Apply, ...) and paste the URL here.
   search_urls:
-    - "https://www.linkedin.com/jobs/search-results/?keywords=java%20full%20stack%20developer&f_TPR=r86400&f_AL=true"
-    - "https://www.linkedin.com/jobs/search-results/?keywords=java%20spring%20boot%20developer&f_TPR=r86400&f_AL=true"
-    - "https://www.linkedin.com/jobs/search-results/?keywords=golang%20developer&f_TPR=r86400&f_AL=true"
+    # Java Full Stack · past 24h · salary filter (your link). Entry-level filter is added from experience_levels.
+    - "https://www.linkedin.com/jobs/search-results/?keywords=java%20full%20stack%20developer&f_TPR=r86400&f_SAL=f_SA_id_227001%3A276001"
+    - "https://www.linkedin.com/jobs/search-results/?keywords=java%20developer&f_TPR=r86400"
+    - "https://www.linkedin.com/jobs/search-results/?keywords=golang%20developer&f_TPR=r86400"
+    - "https://www.linkedin.com/jobs/search-results/?keywords=backend%20developer&f_TPR=r86400"
   # Or generate URLs from keywords (uses date_posted / easy_apply_only / experience_levels below):
   queries: []
   #  - keywords: "java developer"
   #    locations: [""]
-  experience_levels: []       # e.g. [2, 3]  1 internship, 2 entry, 3 associate, 4 mid-senior
+  experience_levels: [2, 3]   # 2 = Entry level, 3 = Associate (fresher–2 yrs). 1 internship, 4 mid-senior
   date_posted: day            # day = past 24 hours | week | month
-  easy_apply_only: true       # true = Easy Apply only; false = also external "Apply on company website"
+  easy_apply_only: false      # false = Easy Apply AND company-site jobs (max applications) | true = Easy Apply only
   pages_per_query: 3          # 25 jobs per page
+
+mycareernet:
+  search_urls: []          # or paste https://mycareernet.co/mycareernet/jobs/listings/<x>-jobs?page=1
+  queries:
+    - keywords: "java developer"
+      locations: [""]      # "" = anywhere; e.g. ["bengaluru", "pune"]
+      experience: 2        # keeps jobs whose "Exp: a - b yrs" range includes this
+    - keywords: "golang developer"
+    - keywords: "backend developer"
+    - keywords: "software engineer"
+  pages_per_query: 8       # MyCareernet lists mostly senior roles — scan more pages to find 2-yr ones
+
+teamlease:
+  search_urls: []          # or paste e.g. https://www.teamleasedigital.com/software-development-jobs
+  queries:
+    - keywords: "java developer"
+      locations: [""]
+      experience: 2
+    - keywords: "software developer"
+    - keywords: "software development"
+    - keywords: "full stack developer"
+  scrolls: 6               # results load as you scroll
+
+randstad:
+  # Randstad's keyword search finds little — browse the IT categories (Enter at the first question uses these)
+  search_urls:
+    - "https://www.randstad.in/jobs/s-it/s2-software-and-application-developers/"
+    - "https://www.randstad.in/jobs/s-it/"
+  queries: []
+  experience: 2            # skip jobs asking more than experience + 2 years ("experience 8" on the job page)
+  pages_per_query: 5       # 30 jobs per page
+
+filters:
+  strict_stack: false      # false = a job without your searched stack (e.g. no Go) is still applied to when it
+                           #         matches your resume >= min_match_score; true = only the searched stack
+  exclude_titles: []       # extra title words to skip, e.g. ["php", "dotnet"]
 
 external:
   enabled: true          # apply on company sites (Greenhouse/Lever auto-filled, others assisted)
@@ -37,6 +75,7 @@ limits:
   daily_cap_by_site:
     linkedin: 15         # LinkedIn flags bursts — keep lower
   min_match_score: 60    # 0-100; jobs below this are skipped
+  ask_low_match_software: true  # below min score -> ask you 'apply anyway? y' (also in --auto); false = skip
 
 delays:                  # seconds, random within range
   action: [0.6, 1.8]

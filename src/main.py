@@ -20,10 +20,19 @@ def main():
     r.add_argument("--location", help='comma-separated cities; "" = anywhere')
     r.add_argument("--days", type=int, help="posted within N days (1, 3, 7, 15, 30)")
     r.add_argument("--no-ask", action="store_true", help="don't ask, use search.yaml (+ flags)")
+    r.add_argument("--retry", action="store_true", default=None,
+                   help="re-check jobs skipped before (low match, off stack, failed, abandoned); on with --auto")
+    r.add_argument("--no-retry", dest="retry", action="store_false", help="with --auto: only new jobs")
+    r.add_argument("--now", action="store_true",
+                   help="with --auto: open company sites (Workday, unknown) immediately instead of at the end")
+    r.add_argument("--auto", action="store_true",
+                   help="max-apply mode: no per-job confirm, auto-submit when every answer is known, "
+                        "queue company sites that need you")
 
     ap = sub.add_parser("apply", help="apply to job links you give (Workday, Greenhouse, Lever, any site)")
     ap.add_argument("--url", nargs="+", default=[], help="one or more job links")
     ap.add_argument("--file", help="text file with one job link per line")
+    ap.add_argument("--queued", action="store_true", help="go through company-site jobs queued by --auto runs")
 
     ou = sub.add_parser("outreach", help="message people at a company on LinkedIn for a referral")
     ou.add_argument("--company", nargs="+", default=[], help='one or more companies: --company "Google" "Atlassian"')
@@ -70,6 +79,9 @@ def main():
         runner.outreach(settings, list(args.company), args.role, args.pending, args.job_url, args.person,
                         args.job_id, args.file or "")
     elif args.cmd == "apply":
+        if args.queued:
+            runner.apply_queued(settings)
+            return
         urls = list(args.url)
         if args.file:
             urls += [l.strip() for l in open(args.file) if l.strip() and not l.startswith("#")]
@@ -81,7 +93,7 @@ def main():
     else:
         runner.choose_search(args.site, settings, args.keywords, args.exp, args.location, args.days,
                              ask=not args.no_ask)
-        runner.run(args.site, settings, args.limit, args.dry_run)
+        runner.run(args.site, settings, args.limit, args.dry_run, args.auto, args.retry, args.now)
 
 
 if __name__ == "__main__":

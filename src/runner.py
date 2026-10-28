@@ -1,11 +1,13 @@
 import hashlib
+from datetime import datetime
 import re
+from collections import Counter
 from urllib.parse import parse_qs, urlsplit
 
 from rich.console import Console
 from rich.markup import escape
 
-from src.ats import apply_external
+from src.ats import apply_external, detect
 from src.config import Settings
 from src.core import llm as llm_mod
 from src.core.answer_engine import AnswerEngine
@@ -23,9 +25,13 @@ from src.outreach.linkedin_outreach import LinkedInOutreach
 from src.outreach.message import build_pitch, write_prep
 from src.outreach.skills import find_skills
 from src.sites.linkedin import LinkedInAdapter
+from src.sites.mycareernet import MyCareernetAdapter, is_anonymous_company
 from src.sites.naukri import NaukriAdapter
+from src.sites.randstad import RandstadAdapter
+from src.sites.teamlease import TeamLeaseAdapter
 
-ADAPTERS = {"naukri": NaukriAdapter, "linkedin": LinkedInAdapter}
+ADAPTERS = {"naukri": NaukriAdapter, "linkedin": LinkedInAdapter, "mycareernet": MyCareernetAdapter,
+            "teamlease": TeamLeaseAdapter, "randstad": RandstadAdapter}
 console = Console()
 
 
@@ -60,6 +66,38 @@ def stack_terms(keywords: str) -> list[str]:
     return out
 
 
+SOFTWARE_ROLE = re.compile(
+    r"\b(software|sde|swe|backend|back[- ]end|full[- ]?stack|programmer|developer|development engineer|"
+    r"application engineer|platform engineer|member of technical staff|mts|java|golang|go|spring|microservices?|api)\b", re.I)
+NOT_SOFTWARE_ROLE = re.compile(
+    r"\b(test(er|ing)?|qa|quality|automation tester|embedded|firmware|hardware|vlsi|asic|rtl|validation|"
+    r"verification|data (analyst|scientist)|analyst|analytics|support|sales|marketing|consultant|"
+    r"mechanical|electrical|civil|power|modem|camera|kernel|cpu|gpu|dsp|pmic|wlan|cad)\b", re.I)
+
+
+EXCLUDE_TITLE = re.compile(
+    r"\b(test(er|ing)?|qa|sdet\d*|quality assurance|guidewire|sap|salesforce|servicenow|mainframe|cobol|"
+    r"pega|siebel|plm|enovia|data entry|bpo|voice process|sales|telecaller|technical support|"
+    r"support engineer|desktop support|helpdesk)\b", re.I)
+
+
+def excluded_title(title: str, extra: list[str] | None = None, wanted: str = "") -> bool:
+    """Roles you didn't ask for (testers, Guidewire/SAP/Salesforce, support, sales...) — skipped
+    before opening the job. A term you searched for yourself (e.g. 'sdet') is never excluded."""
+    hit = EXCLUDE_TITLE.search(title)
+    if hit and hit.group(0).lower() in wanted.lower():
+        hit = None
+    if not hit and extra:
+        hit = next((x for x in extra if x and re.search(rf"\b{re.escape(x)}\b", title, re.I)), None)
+    return bool(hit)
+
+
+def is_software_role(title: str) -> bool:
+    """'Software Engineer', 'Java Developer', 'Backend Engineer' yes; 'Software Tester', 'Embedded Developer',
+    'Data Analyst', plain 'Engineer' no."""
+    return bool(SOFTWARE_ROLE.search(title)) and not NOT_SOFTWARE_ROLE.search(title)
+
+
 def on_stack(terms: list[str], text: str) -> bool:
     if not terms:
         return True
@@ -73,6 +111,22 @@ def on_stack(terms: list[str], text: str) -> bool:
     return False
 
 
+def _naukri_terms(keywords: str) -> str:
+    """Show Naukri's own suggestions for each typed keyword; pick by number (Enter = keep yours)."""
+    from src.sites.naukri_suggest import suggest
+    chosen = []
+    for kw in [k.strip() for k in keywords.split(",") if k.strip()]:
+        sugg = suggest(kw)
+        if not sugg:
+            chosen.append(kw)
+            continue
+        console.print(f"  Naukri terms for [bold]{escape(kw)}[/]: " + "  ".join(f"[cyan]{i}[/] {escape(x)}" for i, x in enumerate(sugg, 1)))
+        raw = console.input(escape("    pick numbers (e.g. 1,2), Enter = keep yours > ")).strip()
+        picks = [sugg[int(x) - 1] for x in re.findall(r"\d+", raw) if 0 < int(x) <= len(sugg)]
+        chosen += picks or [kw]
+    return ", ".join(dict.fromkeys(chosen))
+
+
 def choose_search(site: str, settings: Settings, keywords=None, exp=None, location=None, days=None, ask=True):
     """Ask which stack / experience / location / freshness to search (or take them from CLI flags)
     and rewrite this run's search config. Nothing is saved to search.yaml."""
@@ -80,8 +134,17 @@ def choose_search(site: str, settings: Settings, keywords=None, exp=None, locati
     d = _defaults(site, cfg)
     if ask and keywords is None:
         console.rule(f"[bold]What should I search on {site}?[/] (Enter = keep default)")
+        hint = (f"Enter = your {len(cfg['search_urls'])} saved links" if cfg.get("search_urls")
+                else ", ".join(d["keywords"]))
         raw = console.input(escape(f"  Stack / role (comma for several) — or paste a {site} search link "
-                                   f"[{', '.join(d['keywords'])}] > ")).strip()
+                                   f"[{hint}] > ")).strip()
+        if not raw and cfg.get("search_urls"):
+            console.print(f"  → using your {len(cfg['search_urls'])} saved {site} search links (search.yaml)")
+            if site == "linkedin":
+                easy_only = cfg.get("easy_apply_only", False)
+                r2 = console.input(escape(f"  Easy Apply only? (n = also company-site jobs) [{'Y/n' if easy_only else 'y/N'}] > ")).strip().lower()
+                cfg["easy_apply_only"] = easy_only if not r2 else r2.startswith("y")
+            return
         if raw.startswith("http"):
             cfg["search_urls"], cfg["queries"] = [raw], []
             raw2 = console.input(escape(f"  Posted within days (1, 3, 7, 15, 30) [{d['days']}] > ")).strip()
@@ -91,6 +154,8 @@ def choose_search(site: str, settings: Settings, keywords=None, exp=None, locati
             console.print(f"  → using your link · last {days} day(s) · newest first")
             return
         keywords = raw or ", ".join(d["keywords"])
+        if site == "naukri" and raw:
+            keywords = _naukri_terms(keywords)
         raw = console.input(escape(f"  Experience in years [{d['exp']}] > ")).strip()
         exp = int(raw) if raw.isdigit() else d["exp"]
         raw = console.input(escape(f"  Locations (comma; '-' = anywhere) [{', '.join(d['locations']) or 'anywhere'}] > ")).strip()
@@ -99,6 +164,10 @@ def choose_search(site: str, settings: Settings, keywords=None, exp=None, locati
         days = int(raw) if raw.isdigit() else d["days"]
         raw = console.input(escape(f"  Newest first (sort by date)? [{'Y/n' if d['sort'] else 'y/N'}] > ")).strip().lower()
         sort = d["sort"] if not raw else raw.startswith("y")
+        if site == "linkedin":
+            easy_only = cfg.get("easy_apply_only", False)
+            raw = console.input(escape(f"  Easy Apply only? (n = also company-site jobs) [{'Y/n' if easy_only else 'y/N'}] > ")).strip().lower()
+            cfg["easy_apply_only"] = easy_only if not raw else raw.startswith("y")
     else:
         sort = d["sort"]
     kws = [k.strip() for k in (keywords if keywords is not None else ", ".join(d["keywords"])).split(",") if k.strip()]
@@ -128,7 +197,14 @@ def _daily_cap(limits: dict, site: str) -> int:
     return (limits.get("daily_cap_by_site") or {}).get(site, limits.get("daily_cap", 25))
 
 
-def run(site: str, settings: Settings, limit: int | None, dry_run: bool):
+class _LimitReached(Exception):
+    pass
+
+
+def run(site: str, settings: Settings, limit: int | None, dry_run: bool, auto: bool = False,
+        retry: bool | None = None, now: bool = False):
+    retry = auto if retry is None else retry            # --auto re-checks earlier skips unless --no-retry
+    session_start = datetime.now().isoformat(timespec="seconds")
     human = Human(settings.search.get("delays", {}))
     adapter = ADAPTERS[site](settings.search, human)
     limits = settings.search.get("limits", {})
@@ -140,7 +216,15 @@ def run(site: str, settings: Settings, limit: int | None, dry_run: bool):
     resume = load_resume_text(settings.resume_path)
     engine = AnswerEngine(settings.profile, resume, llm)
     matcher = Matcher(settings.profile, resume, llm)
-    reviewer = Reviewer(settings.search.get("review", {}))
+    review_cfg = dict(settings.search.get("review", {}))
+    if auto:
+        review_cfg.update(confirm_before_apply=False, auto_submit_known=True)
+        settings.outreach["ask_after_apply"] = False
+        console.print("[bold green]AUTO mode[/]: applies without asking when every answer is known; unknown "
+                      "questions still ask you; company sites that need you are done at the END of this run "
+                      f"(same session){'; re-checking earlier skipped jobs' if retry else ''}.\n"
+                      "  Afterwards: [cyan]python -m src.main outreach --pending 1[/]")
+    reviewer = Reviewer(review_cfg)
 
     remaining = _daily_cap(limits, site) - tracker.applied_today(site)
     if limit:
@@ -149,47 +233,78 @@ def run(site: str, settings: Settings, limit: int | None, dry_run: bool):
         console.print("Daily cap reached. Come back tomorrow.")
         return
     min_score = limits.get("min_match_score", 0)
+    exclude_extra = (settings.search.get("filters") or {}).get("exclude_titles") or []
+    ask_low = limits.get("ask_low_match_software", True)
+    strict = bool((settings.search.get("filters") or {}).get("strict_stack", False))
     applied = 0
 
     with open_browser() as page:
         adapter.ensure_logged_in(page)
+        quit_early = False
         try:
             for query in adapter.queries():
                 terms = stack_terms(query.get("keywords", ""))
+                found = seen_before = 0
+                counts = Counter()
                 for job in adapter.search(page, query):
-                    if tracker.seen(job):
+                    found += 1
+                    if tracker.seen(job, retry=retry):
+                        seen_before += 1
+                        continue
+                    if excluded_title(job.title, exclude_extra, query.get("keywords", "")):
+                        console.print(f"  [dim]not your role: {job.title} — {job.company}[/]")
+                        counts["not your role"] += 1
+                        if not dry_run:
+                            tracker.log(job, "off_stack", note="excluded title")
+                        continue
+                    # cards show only ~5 tags -> judge the stack on the card only in strict mode
+                    if strict and terms and job.tags and not on_stack(terms, " ".join([job.title, job.snippet, *job.tags])):
+                        console.print(f"  [dim]off stack (card): {job.title} — {job.company}  [{', '.join(job.tags[:5])}][/]")
+                        counts["off stack"] += 1
+                        if not dry_run:
+                            tracker.log(job, "off_stack", note="card tags")
                         continue
                     detail = adapter.open_job(page, job)
-                    skip = ("already_applied" if detail.already_applied else "closed" if detail.closed
-                            else "external" if detail.external and not external_on else None)
+                    skip = (detail.skip_reason or ("already_applied" if detail.already_applied else
+                            "closed" if detail.closed else
+                            "external" if detail.external and not external_on else None))
                     if skip:
                         console.print(f"  [dim]{skip}: {job.title} — {job.company}[/]")
+                        counts[skip] += 1
                         if not dry_run:
                             tracker.log(job, skip, apply_via="external" if skip == "external" else "")
                         continue
 
-                    if not on_stack(terms, f"{job.title}\n{detail.description}"):
-                        console.print(f"  [dim]off stack ({'/'.join(terms)} not mentioned): {job.title} — {job.company}[/]")
-                        if not dry_run:
-                            tracker.log(job, "off_stack", note=f"wanted {'/'.join(terms)}")
-                        continue
                     score, reason = matcher.score(detail)
+                    if not on_stack(terms, f"{job.title}\n{' '.join(job.tags)}\n{detail.description}"):
+                        # not the stack you searched — still apply if it fits your resume (strict_stack: false)
+                        if strict or score < min_score or not is_software_role(job.title):
+                            console.print(f"  [dim]off stack ({'/'.join(terms)} not mentioned, match {score}): "
+                                          f"{job.title} — {job.company}[/]")
+                            counts["off stack"] += 1
+                            if not dry_run:
+                                tracker.log(job, "off_stack", score, note=f"wanted {'/'.join(terms)}")
+                            continue
+                        reason = f"no {'/'.join(terms)}, but fits your skills — {reason}"
                     kind = "external" if detail.external else site
-                    if score < min_score:
+                    low = score < min_score
+                    if low and not ask_low:
                         console.print(f"  [dim]low match {score}: {job.title} — {job.company} ({reason})[/]")
+                        counts["low match"] += 1
                         if not dry_run:
                             tracker.log(job, "low_match", score, reason)
                         continue
                     if dry_run:
-                        console.print(f"  [green]would apply[/] {score} [{kind}]: {job.title} — {job.company}")
+                        console.print(f"  [green]would {'ask (low match)' if low else 'apply'}[/] {score} [{kind}]: "
+                                      f"{job.title} — {job.company}")
                         continue
 
-                    if not reviewer.confirm_apply(detail, score, reason):
-                        tracker.log(job, "skipped", score)
+                    if not reviewer.confirm_apply(detail, score, reason, low_match=low):
+                        tracker.log(job, "low_match" if low else "skipped", score, reason if low else "")
                         continue
 
                     session = ApplySession(detail, engine, reviewer, human, settings.resume_path)
-                    status, via, ext_url = _apply_one(adapter, page, session, site)
+                    status, via, ext_url = _apply_one(adapter, page, session, site, now)
                     tracker.log(job, status, score, apply_via=via, external_url=ext_url)
                     console.print(f"  → [bold]{status}[/] via {via}")
                     if status.startswith("applied") and settings.outreach.get("ask_after_apply"):
@@ -199,12 +314,26 @@ def run(site: str, settings: Settings, limit: int | None, dry_run: bool):
                         applied += 1
                         if applied >= remaining:
                             console.print(f"Reached limit ({applied} applied).")
-                            return
+                            raise _LimitReached()
                     human.between_jobs()
+                console.print(f"  [bold]search summary:[/] {found} found · {seen_before} already in history"
+                              f" · {found - seen_before} checked now"
+                              + ("" if retry or not seen_before else
+                                 "   (re-check skipped/low-match ones with [cyan]--retry[/])"))
+                if counts:
+                    console.print("  skipped: " + " · ".join(f"{n} {why}" for why, n in counts.most_common()))
+                if found and counts["off stack"] + counts["not your role"] >= 0.8 * (found - seen_before):
+                    console.print("  [yellow]tip:[/] few jobs for this stack — Naukri pads results with generic ones. "
+                                  "Search several stacks (e.g. [cyan]golang developer, java developer, backend developer[/]), "
+                                  "use 15/30 days, or set filters.strict_stack: false in search.yaml")
+        except _LimitReached:
+            pass
         except QuitRun:
             console.print("Stopped by you.")
-        finally:
-            console.print(f"Applied this run: [bold]{applied}[/]   History CSV: {CSV_PATH}")
+            quit_early = True
+        if auto and not dry_run and not quit_early:
+            applied += _work_queue(page, settings, engine, human, tracker, since=session_start)
+        console.print(f"Applied this run: [bold]{applied}[/]   History CSV: {CSV_PATH}")
 
 
 def referral(page, settings: Settings, company: str, role: str, job_text: str, resume: str,
@@ -213,6 +342,10 @@ def referral(page, settings: Settings, company: str, role: str, job_text: str, r
     """Write prep notes, then (after your OK) message people at the company on LinkedIn."""
     cfg = settings.outreach
     if not cfg.get("enabled"):
+        return 0
+    if is_anonymous_company(company):
+        console.print(f"  [dim]referral skipped: company is hidden ({company!r}). If you know it: "
+                      f"python -m src.main outreach --company \"<name>\" --role \"{role}\"[/]")
         return 0
     pitch = build_pitch(cfg, role, company, job_text, resume)
     prep = write_prep(pitch, role, company, job_text, job_url)
@@ -371,7 +504,7 @@ def _contact_people(settings, urls, company, role, job_url, human, tracker, revi
             console.print("Stopped by you.")
 
 
-def _apply_one(adapter, page, session: ApplySession, site: str) -> tuple[str, str, str]:
+def _apply_one(adapter, page, session: ApplySession, site: str, now: bool = False) -> tuple[str, str, str]:
     """Returns (status, apply_via, external_url)."""
     if not session.detail.external:
         try:
@@ -383,6 +516,18 @@ def _apply_one(adapter, page, session: ApplySession, site: str) -> tuple[str, st
     if ext is None:
         return "failed", "external", ""
     ext_url = ext.url
+    if session.reviewer.auto_submit and not now:      # --now: handle company sites immediately instead
+        ext.wait_for_load_state("domcontentloaded")
+        ext.wait_for_timeout(2500)
+        handler = detect(ext)
+        if handler.name in ("generic", "workday"):          # needs you: queue, keep the run moving
+            ext_url = ext.url
+            if ext is not page:
+                ext.close()
+                page.bring_to_front()
+            console.print(f"  [yellow]queued[/] ({handler.name} site needs you) — opens at the end of this run "
+                          f"(or use --now to do it immediately)")
+            return "queued", handler.name, ext_url
     try:
         status, via = apply_external(ext, session)
         ext_url = ext.url
@@ -432,6 +577,50 @@ def apply_links(urls: list[str], settings: Settings):
                 except QuitRun:
                     break
     console.print(f"History CSV: {CSV_PATH}")
+
+
+def _work_queue(page, settings: Settings, engine, human, tracker, since: str = "") -> int:
+    """Company-site jobs queued (unknown sites / Workday logins): fill what's known, you finish,
+    the tool learns. since = only rows queued at/after this timestamp (this session). Returns applied."""
+    rows = tracker.db.execute(
+        "SELECT site, job_id, title, company, url, external_url, location FROM applications "
+        "WHERE status='queued' AND updated_at >= ? ORDER BY updated_at", (since,)).fetchall()
+    if not rows:
+        return 0
+    reviewer = Reviewer({**settings.search.get("review", {}), "auto_submit_known": False})
+    console.rule(f"[bold magenta]{len(rows)} company-site jobs that need you[/] — s = skip one, q = stop (rest stay queued)")
+    applied = 0
+    for i, (site, job_id, title, company, url, ext_url, loc) in enumerate(rows, 1):
+        console.rule(f"[bold]{i}/{len(rows)} · {company}[/] — {title}")
+        job = Job(site=site, id=job_id, title=title, company=company, url=url, location=loc or "")
+        page.goto(ext_url or url, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        detail = JobDetail(job, description=page.locator("body").inner_text()[:6000], external=True)
+        session = ApplySession(detail, engine, reviewer, human, settings.resume_path)
+        try:
+            status, via = apply_external(page, session)
+        except SkipJob:
+            status, via = "skipped", "external"
+        except QuitRun:
+            console.print("Stopped — remaining jobs stay in the queue (python -m src.main apply --queued).")
+            break
+        tracker.log(job, status, apply_via=via, external_url=page.url)
+        console.print(f"  → [bold]{status}[/] via {via}")
+        applied += status.startswith("applied")
+    return applied
+
+
+def apply_queued(settings: Settings):
+    """`apply --queued`: every queued company-site job, any session."""
+    tracker = Tracker()
+    if not tracker.db.execute("SELECT 1 FROM applications WHERE status='queued'").fetchone():
+        console.print("Queue is empty.")
+        return
+    human = Human(settings.search.get("delays", {}))
+    engine = AnswerEngine(settings.profile, load_resume_text(settings.resume_path),
+                          llm_mod.from_env(settings.llm_provider))
+    with open_browser() as page:
+        _work_queue(page, settings, engine, human, tracker)
 
 
 def report():

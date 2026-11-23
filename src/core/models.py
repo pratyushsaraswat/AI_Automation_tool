@@ -12,6 +12,7 @@ class Job:
     experience: str = ""
     tags: list[str] = field(default_factory=list)   # skills shown on the search card (Naukri key skills)
     snippet: str = ""                               # short description shown on the search card
+    salary: str = ""                                # posted package, when the card shows one ("10-18 Lacs PA")
 
 
 @dataclass

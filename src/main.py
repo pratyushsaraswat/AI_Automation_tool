@@ -24,10 +24,11 @@ def main():
                    help="re-check jobs skipped before (low match, off stack, failed, abandoned); on with --auto")
     r.add_argument("--no-retry", dest="retry", action="store_false", help="with --auto: only new jobs")
     r.add_argument("--now", action="store_true",
-                   help="with --auto: open company sites (Workday, unknown) immediately instead of at the end")
+                   help="with --auto: open company sites (Workday, unknown) immediately (not queued)")
+    r.add_argument("--queue-external", action="store_true",
+                   help="with --auto: queue generic/Workday company sites for end of run (or apply --queued)")
     r.add_argument("--auto", action="store_true",
-                   help="max-apply mode: no per-job confirm, auto-submit when every answer is known, "
-                        "queue company sites that need you")
+                   help="max-apply mode: no per-job confirm, auto-submit when every answer is known")
 
     ap = sub.add_parser("apply", help="apply to job links you give (Workday, Greenhouse, Lever, any site)")
     ap.add_argument("--url", nargs="+", default=[], help="one or more job links")
@@ -93,7 +94,8 @@ def main():
     else:
         runner.choose_search(args.site, settings, args.keywords, args.exp, args.location, args.days,
                              ask=not args.no_ask)
-        runner.run(args.site, settings, args.limit, args.dry_run, args.auto, args.retry, args.now)
+        runner.run(args.site, settings, args.limit, args.dry_run, args.auto, args.retry, args.now,
+                   args.queue_external)
 
 
 if __name__ == "__main__":

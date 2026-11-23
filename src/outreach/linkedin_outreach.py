@@ -273,6 +273,9 @@ class LinkedInOutreach:
     def contact(self, page, person: Person, pitch: Pitch) -> tuple[str, str]:
         page.goto(person.url, wait_until="domcontentloaded")
         page.wait_for_timeout(3000)
+        for _ in range(2):
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
         top, name = self._top_card(page, person.name)
         if name:
             person.name = name
@@ -386,22 +389,225 @@ class LinkedInOutreach:
             return False
 
     @staticmethod
-    def _in_frames(page, make, timeout_ms: int = 0):
-        """Find a locator in the page or any iframe (LinkedIn renders the invite in /preload/ iframe or
-        shadow DOM). make(scope) -> Locator. Polls up to timeout_ms."""
+    def _scopes(page):
+        return [page] + [f for f in page.frames if f != page.main_frame]
+
+    INVITE_TITLE = re.compile(r"add a note to your invitation", re.I)
+    ADD_NOTE = re.compile(r"^\s*add a note\s*$", re.I)
+    SEND_BTN = re.compile(r"^\s*send(\s+(now|invitation))?\s*$", re.I)
+    NOTE_FIELD = "textarea, [contenteditable='true'], [role='textbox']"
+
+    def _usable_scopes(self, page):
+        """Main page, plus iframes that are actually on screen. LinkedIn's /preload/ iframe covers the
+        viewport at opacity 0 and holds stray editors — never type into those."""
+        scopes = [page]
+        for frame in page.frames:
+            if frame == page.main_frame:
+                continue
+            try:
+                host = frame.frame_element()
+                opacity = float(host.evaluate("e => parseFloat(getComputedStyle(e).opacity || '1')"))
+                box = host.bounding_box()
+                if opacity < 0.05 or not box or box["width"] < 40 or box["height"] < 40:
+                    continue
+                if host.is_visible():
+                    scopes.append(frame)
+            except (PlaywrightError, ValueError, TypeError):
+                continue
+        return scopes
+
+    def _invite_heading(self, scope):
+        return scope.get_by_text(self.INVITE_TITLE).last
+
+    def _invite_visible(self, scope) -> bool:
+        try:
+            return self._invite_heading(scope).count() > 0 and self._invite_heading(scope).is_visible()
+        except PlaywrightError:
+            return False
+
+    @staticmethod
+    def _in_frames(page, make, timeout_ms: int = 0, last: bool = False):
+        """Find a locator in the page or any iframe. make(scope) -> Locator. Polls up to timeout_ms."""
         waited = 0
+        pick = (lambda loc: loc.last if last else loc.first)
         while True:
-            for scope in [page] + [f for f in page.frames if f != page.main_frame]:
+            for scope in LinkedInOutreach._scopes(page):
                 try:
                     loc = make(scope)
                     if loc.count():
-                        return loc.first
+                        return pick(loc)
                 except PlaywrightError:
                     continue
             if waited >= timeout_ms:
                 return None
             page.wait_for_timeout(300)
             waited += 300
+
+    def _invite_dialogs(self, page) -> list:
+        """Visible invite modals, smallest first (the card, not a page-sized wrapper)."""
+        found = []
+        for scope in self._usable_scopes(page):
+            try:
+                loc = scope.locator("dialog, [role='dialog'], .artdeco-modal").filter(has_text=self.INVITE_TITLE)
+                for i in range(min(loc.count(), 6)):
+                    el = loc.nth(i)
+                    box = el.bounding_box()
+                    if el.is_visible() and box and box["width"] > 80 and box["height"] > 40:
+                        found.append((box["width"] * box["height"], el))
+            except PlaywrightError:
+                continue
+        found.sort(key=lambda item: item[0])
+        return [el for _, el in found]
+
+    def _note_box(self, dlg):
+        """Textarea / editor inside THIS dialog. The messaging widget's editor is not one."""
+        try:
+            loc = dlg.locator(self.NOTE_FIELD).filter(visible=True)
+            for i in range(min(loc.count(), 6)):
+                el = loc.nth(i)
+                box = el.bounding_box()
+                if box and box["width"] > 80 and box["height"] > 28:
+                    return el
+        except PlaywrightError:
+            return None
+        return None
+
+    def _find_invite_note(self, page, timeout_ms: int = 8000):
+        """The note field after [Add a note] — only inside the invite dialog."""
+        waited = 0
+        while True:
+            for dlg in self._invite_dialogs(page):
+                box = self._note_box(dlg)
+                if box:
+                    return box
+            if waited >= timeout_ms:
+                return None
+            page.wait_for_timeout(300)
+            waited += 300
+
+    def _composer_limit(self, page, default: int = NOTE_LIMIT) -> int:
+        """Read the live counter ('0/200') so a Premium 200-char box is not overfilled."""
+        for dlg in self._invite_dialogs(page):
+            try:
+                caps = [int(n) for n in re.findall(r"/\s*(\d{2,3})\b", dlg.inner_text() or "")]
+            except PlaywrightError:
+                continue
+            caps = [n for n in caps if 50 <= n <= NOTE_LIMIT]
+            if caps:
+                return min(caps)
+        return default
+
+    def _invite_send_button(self, page):
+        """Send inside the invite dialog. Never the messaging composer's Send."""
+        for dlg in self._invite_dialogs(page):
+            try:
+                btn = dlg.locator("button, [role='button'], a").filter(has_text=self.SEND_BTN).filter(visible=True)
+                if btn.count():
+                    return btn.last
+            except PlaywrightError:
+                continue
+        return None
+
+    def _invite_ready(self, scope):
+        if self._invite_visible(scope):
+            return self._invite_heading(scope)
+        wo = scope.locator("button, [role='button'], a").filter(
+            has_text=re.compile(r"send without a note", re.I)).filter(visible=True)
+        return wo if wo.count() else self._invite_heading(scope)
+
+    def _click_add_note(self, page) -> bool:
+        """Open the note step with a real click. LinkedIn's control is an <a href="the profile">,
+        so block that navigation — otherwise the dialog is thrown away and the textarea never opens."""
+        for dlg in self._invite_dialogs(page):
+            try:
+                dlg.evaluate("""root => {
+                    const doc = root.ownerDocument;
+                    if (doc.__stopInviteNav) return;
+                    doc.__stopInviteNav = (ev) => {
+                        const a = ev.target && ev.target.closest && ev.target.closest('a');
+                        if (a && /^\\s*add a note\\s*$/i.test((a.innerText || '').trim())) ev.preventDefault();
+                    };
+                    doc.addEventListener('click', doc.__stopInviteNav, true);
+                }""")
+                link = dlg.locator("a, button, [role='button']").filter(has_text=self.ADD_NOTE).filter(visible=True)
+                if link.count():
+                    link.last.click(timeout=5000, no_wait_after=True)
+                    return True
+                point = dlg.evaluate("""root => {
+                    const el = [...root.querySelectorAll('a, button, [role="button"]')]
+                        .find(e => /^\\s*add a note\\s*$/i.test((e.innerText || '').trim()));
+                    if (!el) return null;
+                    const r = el.getBoundingClientRect();
+                    return r.width ? {x: r.x + r.width / 2, y: r.y + r.height / 2} : null;
+                }""")
+                if not point:
+                    continue
+                page.mouse.click(point["x"], point["y"])
+                return True
+            except PlaywrightError:
+                continue
+        return False
+
+    def _open_invite_note(self, page) -> bool:
+        """Step 1 is [Add a note] / [Send without a note]. Step 2 is the textarea. A note field
+        anywhere else on the profile (messaging, search) does not count."""
+        if self._find_invite_note(page, 600):
+            return True
+        if not self._invite_dialogs(page) and not self._in_frames(page, self._invite_ready, 2000):
+            return False
+        for _ in range(3):
+            if not self._click_add_note(page):
+                return self._find_invite_note(page, 500) is not None
+            if self._find_invite_note(page, 5000):
+                return True
+            page.wait_for_timeout(400)
+        return self._find_invite_note(page, 800) is not None
+
+    @staticmethod
+    def _note_stuck(box, text: str) -> bool:
+        try:
+            got = box.evaluate("el => (el.value || el.innerText || '').replace(/\\s+/g, ' ').trim()")
+        except PlaywrightError:
+            return False
+        snippet = " ".join(text.split())[:24]
+        return bool(snippet) and snippet in got
+
+    def _type_invite_note(self, page, box, text: str) -> bool:
+        """Type the note and check it actually landed. ProseMirror ignores a plain .value set."""
+        try:
+            box.click(timeout=4000)
+            try:
+                box.fill(text, timeout=5000)
+            except PlaywrightError:
+                page.keyboard.press("Control+a")
+                page.keyboard.insert_text(text)
+        except PlaywrightError:
+            pass
+        if self._note_stuck(box, text):
+            return True
+        try:
+            box.evaluate("""(el, text) => {
+                el.focus();
+                const area = el.tagName === 'TEXTAREA' || el.tagName === 'INPUT';
+                if (area) {
+                    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement : HTMLInputElement;
+                    const desc = Object.getOwnPropertyDescriptor(proto.prototype, 'value');
+                    if (desc && desc.set) desc.set.call(el, text);
+                    else el.value = text;
+                } else {
+                    const sel = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    document.execCommand('insertText', false, text);
+                }
+                el.dispatchEvent(new InputEvent('input', {bubbles: true, data: text, inputType: 'insertText'}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+            }""", text)
+        except PlaywrightError:
+            return False
+        return self._note_stuck(box, text)
 
     def _review(self, kind: str, person: Person, text: str, subject: str = "", limit: int = 0) -> str | None:
         """Show the text; returns final text, or None to skip. Raises QuitRun on q.
@@ -476,47 +682,48 @@ class LinkedInOutreach:
         if text is None:
             page.keyboard.press("Escape")
             return "skipped"
-        add_note = lambda sc: sc.get_by_role("button", name=re.compile(r"^\s*add a note\s*$", re.I)).filter(visible=True)
-        note_box = lambda sc: sc.locator("textarea[name='message'], textarea#custom-message, "
-                                         "textarea[placeholder*='know each other' i], textarea").filter(visible=True)
-        without = lambda sc: sc.get_by_role("button", name=re.compile(r"send without a note", re.I)).filter(visible=True)
-        send = lambda sc: sc.get_by_role("button", name=re.compile(r"^\s*send( invitation| now)?\s*$", re.I)).filter(visible=True)
-        ready = lambda sc: add_note(sc).or_(note_box(sc)).or_(without(sc))
-
         if not self._click(page, connect):
             dump_debug(page, "outreach-noclick")
             return "failed"
-        if not self._in_frames(page, ready, 5000):
+        page.wait_for_timeout(800)
+        if not self._in_frames(page, self._invite_ready, 6000):
             try:
                 connect.evaluate("e => (e.closest('a,button,[role=menuitem]') || e).click()")
             except PlaywrightError:
                 pass
-            if not self._in_frames(page, ready, 6000):
+            page.wait_for_timeout(800)
+            if not self._in_frames(page, self._invite_ready, 8000):
                 dump_debug(page, "outreach-noinvite")
                 console.print("[yellow]Invite dialog did not open.[/]")
                 return "failed"
 
-        # step 1: "Add a note to your invitation?"  [Add a note] [Send without a note]
-        btn = self._in_frames(page, add_note)
-        if btn:
-            self._click(page, btn)
-        box = self._in_frames(page, note_box, 6000)
-        if not box:
+        if not self._open_invite_note(page):
             dump_debug(page, "outreach-nonote")
             console.print("[yellow]Note box did not appear.[/]")
-            wo = self._in_frames(page, without)
-            if wo and self.reviewer.choose("[cyan]y[/] send without note  [cyan]s[/] skip", "ys") == "y":
+            wo = self._in_frames(
+                page, lambda sc: sc.get_by_role("button", name=re.compile(r"send without a note", re.I)).filter(visible=True),
+            )
+            if wo and not self.auto and self.reviewer.choose(
+                    "[cyan]y[/] send without note  [cyan]s[/] skip", "ys") == "y":
                 return self._send(page, wo, person)
+            if wo and self.auto:
+                console.print("[yellow]Batch mode: skipping — cannot send without note when note UI failed.[/]")
             page.keyboard.press("Escape")
             return "failed"
 
-        # step 2: note box (0/300) -> [Send]
-        box.click()
-        box.fill(text)
-        page.wait_for_timeout(600)
-        snd = self._in_frames(page, send, 3000)
+        box = self._find_invite_note(page, 2000)
+        text = fit_note(text, self._composer_limit(page))
+        if not box or not self._type_invite_note(page, box, text):
+            dump_debug(page, "outreach-nonote")
+            console.print("[yellow]Could not type into the note field.[/]")
+            page.keyboard.press("Escape")
+            return "failed"
+
+        page.wait_for_timeout(500)
+        snd = self._invite_send_button(page)
         if not snd:
             dump_debug(page, "outreach-nosend")
+            console.print("[yellow]Send button not found in invite dialog.[/]")
             page.keyboard.press("Escape")
             return "failed"
         return self._send(page, snd, person)

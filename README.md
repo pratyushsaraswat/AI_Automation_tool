@@ -44,7 +44,8 @@ python -m src.main apply --queued                  # then: company sites that ne
 python -m src.main outreach --pending 1            # then: referral notes for today's applications
 ```
 `--auto`: no per-job confirm; submits when every answer is known (profile / memory / prefilled);
-still asks for anything unknown; unknown company sites + Workday logins are queued, not blocking.
+still asks for anything unknown. Generic / Workday company sites: **apply now**, **queue for end**, or **ask each**
+(run prompt, `external.company_sites` in `config/search.yaml`, or `--now` / `--queue-external`).
 
 ## External (company-site) applications
 LinkedIn "Apply" / Naukri "Apply on company site" open the company site in a new tab, then:

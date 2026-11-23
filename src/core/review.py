@@ -41,12 +41,15 @@ class Reviewer:
             raise QuitRun()
         return choice != "s"
 
-    def choose(self, prompt: str, choices: str) -> str:
-        """Single-letter prompt, e.g. choose('Finished?', 'dsq'). q always quits."""
+    def choose(self, prompt: str, choices: str, default: str = "") -> str:
+        """Single-letter prompt, e.g. choose('Finished?', 'dsq'). q always quits.
+        Enter returns default when that letter is one of the choices."""
         while True:
             raw = console.input(f"{prompt} > ").strip().lower()[:1]
             if raw == "q":
                 raise QuitRun()
+            if not raw and default in choices:
+                return default
             if raw and raw in choices:
                 return raw
 

@@ -1,7 +1,7 @@
 # Job Apply Assistant
 
 Searches jobs, scores them against your resume, fills applications — **you approve each one**.
-Sites: Naukri, LinkedIn (Easy Apply + external), MyCareernet, TeamLease Digital, Randstad India, company sites: Greenhouse & Lever (auto-fill),
+Sites: Naukri, LinkedIn (Easy Apply + external), MyCareernet, TeamLease Digital, Randstad India, Wellfound, company sites: Greenhouse & Lever (auto-fill),
 any other site (assisted: fills what it can, you submit).
 
 ## Setup
@@ -31,6 +31,9 @@ python -m src.main login --site teamlease
 python -m src.main run --site teamlease --auto --limit 20
 python -m src.main login --site randstad
 python -m src.main run --site randstad --auto --limit 20
+python -m src.main login --site wellfound
+python -m src.main run --site wellfound --dry-run
+python -m src.main run --site wellfound --auto --limit 15      # startup jobs; you approve unknown answers
 python -m src.main apply --url "https://acme.wd5.myworkdayjobs.com/..."   # any job link (Workday etc.)
 python -m src.main apply --file links.txt   # one link per line
 python -m src.main export --applied-only     # data/applications.csv (also auto-updated after every job)
@@ -40,6 +43,7 @@ python -m src.main export --applied-only     # data/applications.csv (also auto-
 ```bash
 python -m src.main run --site linkedin --auto      # Easy Apply + company-site jobs
 python -m src.main run --site naukri --auto
+python -m src.main run --site naukri --auto --handpicked        # only Jobs → Recommended → Handpicked for you (--handpicked all = all 4 tabs)
 python -m src.main apply --queued                  # then: company sites that need you (tool learns them)
 python -m src.main outreach --pending 1            # then: referral notes for today's applications
 ```

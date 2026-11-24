@@ -13,7 +13,8 @@ naukri:
   job_age_days: 7          # skip a card older than this when it shows a posted date. Not sent as jobAge.
   min_ctc_lpa: 10          # your package is 9 LPA — skip a card whose posted package is below this. Not sent as ctcFilter.
   recommended: true        # Jobs menu → Recommended Jobs, before the keyword searches
-  recommended_pages: 2
+  recommended_tabs: [handpicked]   # Recommended jobs page tabs: handpicked, applies, preferences, you_might_like
+  recommended_days:            # only recommended jobs posted within N days (empty = all)
   pages_per_query: 3       # 20 jobs per page
   sort_by_date: true
 
@@ -65,6 +66,24 @@ randstad:
   experience: 2            # skip jobs asking more than experience + 2 years ("experience 8" on the job page)
   pages_per_query: 5       # 30 jobs per page
 
+wellfound:
+  # Startup jobs. Role pages: wellfound.com/role/l/<role>/<place>  (place: india, bangalore, mumbai, pune,
+  # delhi, hyderabad, gurgaon ... or "remote" for remote-only). Or paste any wellfound role link here:
+  search_urls: []
+  queries:
+    - keywords: "software engineer"
+      locations: ["india", "remote"]
+      experience: 2
+    - keywords: "backend engineer"
+    - keywords: "full stack engineer"
+    - keywords: "java developer"
+    - keywords: "golang developer"
+  experience: 2            # skips jobs whose minimum is more than experience + 2 years
+  date_posted_days: 30     # Wellfound has fewer, older-lasting posts than Naukri — 30 is a good default
+  pages_per_query: 4       # ~30-40 jobs per page
+  # note: "..."            # optional template for "What interests you about working for this company?"
+  #                        # placeholders: {title} {my_company} {years} {skills} {company} {role}
+
 filters:
   strict_stack: false      # true = also drop a card before opening it, when the card tags miss your stack
   preferred_stacks:        # a generic search ("software developer") must mention one of these
@@ -84,6 +103,7 @@ limits:
   daily_cap: 250          # max applications per site per day
   daily_cap_by_site:
     linkedin: 15         # LinkedIn flags bursts — keep lower
+    wellfound: 15        # Wellfound caps active applications and flags bursts
   min_match_score: 60    # 0-100; jobs below this are skipped
   ask_low_match_software: true  # below min score -> ask you 'apply anyway? y' (also in --auto); false = skip
 

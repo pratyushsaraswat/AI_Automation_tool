@@ -15,7 +15,7 @@ from playwright.sync_api import TimeoutError as PWTimeout
 from rich.table import Table
 
 from src.core.models import Field, QuitRun, SkipJob
-from src.core.review import console
+from src.core.review import ask_fresh, console
 from src.core.session import ApplySession
 
 SCAN_JS = r"""
@@ -401,7 +401,7 @@ class FormFiller:
                 console.print(f"  [green]auto:[/] every answer known → {action}")
                 return ""
             hint = "number = edit field  " if editable else ""
-            raw = console.input(f"[bold cyan][Enter][/] {action}  {hint}{extra}s skip  q quit > ").strip().lower()
+            raw = ask_fresh(f"[bold cyan][Enter][/] {action}  {hint}{extra}s skip  q quit > ").strip().lower()
             if raw == "q":
                 raise QuitRun()
             if raw == "s":

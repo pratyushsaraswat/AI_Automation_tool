@@ -8,6 +8,24 @@ from src.core.models import Answer, Field, JobDetail, QuitRun, SkipJob
 console = Console()
 
 
+def flush_input():
+    """Drop keys typed before a question appears (e.g. extra Enters pressed while a page loads),
+    so they can't answer a send / submit prompt by accident."""
+    try:
+        import sys
+        import termios
+        if sys.stdin.isatty():
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except (ImportError, OSError, ValueError):
+        pass
+
+
+def ask_fresh(prompt: str) -> str:
+    """console.input that ignores anything typed before the prompt was shown."""
+    flush_input()
+    return console.input(prompt)
+
+
 class Reviewer:
     def __init__(self, review_cfg: dict):
         self.confirm_before_apply = review_cfg.get("confirm_before_apply", True)
@@ -29,14 +47,14 @@ class Reviewer:
             border_style="yellow" if low_match else "cyan",
         ))
         if low_match:
-            choice = console.input("Low match — apply anyway? [cyan]y[/] apply  [cyan][Enter][/] skip  "
+            choice = ask_fresh("Low match — apply anyway? [cyan]y[/] apply  [cyan][Enter][/] skip  "
                                    "[cyan]q[/] quit > ").strip().lower()
             if choice == "q":
                 raise QuitRun()
             return choice == "y"
         if not self.confirm_before_apply:
             return True
-        choice = console.input("[cyan][Enter][/] apply  [cyan]s[/] skip  [cyan]q[/] quit > ").strip().lower()
+        choice = ask_fresh("[cyan][Enter][/] apply  [cyan]s[/] skip  [cyan]q[/] quit > ").strip().lower()
         if choice == "q":
             raise QuitRun()
         return choice != "s"
@@ -45,7 +63,7 @@ class Reviewer:
         """Single-letter prompt, e.g. choose('Finished?', 'dsq'). q always quits.
         Enter returns default when that letter is one of the choices."""
         while True:
-            raw = console.input(f"{prompt} > ").strip().lower()[:1]
+            raw = ask_fresh(f"{prompt} > ").strip().lower()[:1]
             if raw == "q":
                 raise QuitRun()
             if not raw and default in choices:

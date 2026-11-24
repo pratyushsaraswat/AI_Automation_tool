@@ -16,7 +16,7 @@ from rich.table import Table
 
 from src.core.browser import dump_debug
 from src.core.models import QuitRun
-from src.core.review import console
+from src.core.review import ask_fresh, console
 from src.core.tracker import Tracker
 from src.outreach.message import NOTE_LIMIT, Pitch, fit_note, with_name
 
@@ -217,8 +217,9 @@ class LinkedInOutreach:
             console.print(table)
             preview = fit_note(with_name(pitch.note, chosen[0][1].first_name))
             console.print(Panel(preview, title=f"Note ({len(preview)}/300) — name changes per person", border_style="magenta"))
-            raw = console.input("[bold cyan][Enter][/] send to all  [cyan]-2[/] remove #2  "
-                                "[cyan]e[/] edit note  [cyan]s[/] skip company  [cyan]q[/] quit > ").strip().lower()
+            raw = ask_fresh("[bold cyan][Enter][/] send to all  [cyan]-2[/] remove #2 (or -2,4)  "
+                            "[cyan]e[/] edit note  [cyan]s[/] skip company  [cyan]q[/] quit > ").strip().lower()
+            raw = raw.replace("\u2212", "-").replace("\u2013", "-")     # − / – typed instead of -
             if raw == "q":
                 raise QuitRun()
             if raw == "s":
@@ -228,10 +229,22 @@ class LinkedInOutreach:
                 if new:
                     pitch.note = new.replace("{first_name}", "there")
                 continue
-            if raw.startswith("-") and raw[1:].isdigit() and 1 <= int(raw[1:]) <= len(chosen):
-                chosen.pop(int(raw[1:]) - 1)
+            drop = re.fullmatch(r"(?:-|remove\s*|r\s*)\s*([\d\s,-]+)", raw)
+            if drop:
+                nums = {int(n) for n in re.findall(r"\d+", drop.group(1))}
+                bad = [n for n in nums if not 1 <= n <= len(chosen)]
+                if bad:
+                    console.print(f"[yellow]No person #{', #'.join(map(str, bad))} — pick 1-{len(chosen)}.[/]")
+                    continue
+                for n in sorted(nums, reverse=True):
+                    kind, person = chosen.pop(n - 1)
+                    console.print(f"  removed #{n} {person.name}")
                 if not chosen:
+                    console.print("  nobody left — company skipped")
                     return 0
+                continue                     # show the list again and ask again
+            if raw:
+                console.print(f"[yellow]Didn't understand {raw!r} — nothing sent. Use Enter, -2, e, s or q.[/]")
                 continue
             if raw == "":
                 break
@@ -617,7 +630,7 @@ class LinkedInOutreach:
         while True:
             body = (f"[dim]Subject:[/] {subject}\n\n" if subject else "") + text
             console.print(Panel(body, title=f"{kind} → {person.name}  ({len(text)} chars)", border_style="magenta"))
-            raw = console.input("[bold cyan][Enter][/] use this  [cyan]e[/] edit  [cyan]s[/] skip  [cyan]q[/] quit > ").strip()
+            raw = ask_fresh("[bold cyan][Enter][/] use this  [cyan]e[/] edit  [cyan]s[/] skip  [cyan]q[/] quit > ").strip()
             if raw.lower() == "q":
                 raise QuitRun()
             if raw.lower() == "s":

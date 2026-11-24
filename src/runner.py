@@ -29,9 +29,10 @@ from src.sites.mycareernet import MyCareernetAdapter, is_anonymous_company
 from src.sites.naukri import NaukriAdapter, salary_ceiling_lpa
 from src.sites.randstad import RandstadAdapter
 from src.sites.teamlease import TeamLeaseAdapter
+from src.sites.wellfound import WellfoundAdapter
 
 ADAPTERS = {"naukri": NaukriAdapter, "linkedin": LinkedInAdapter, "mycareernet": MyCareernetAdapter,
-            "teamlease": TeamLeaseAdapter, "randstad": RandstadAdapter}
+            "teamlease": TeamLeaseAdapter, "randstad": RandstadAdapter, "wellfound": WellfoundAdapter}
 console = Console()
 
 
@@ -41,7 +42,8 @@ def _defaults(site: str, cfg: dict) -> dict:
     if site == "linkedin" and not kws:
         kws = [parse_qs(urlsplit(u).query).get("keywords", [""])[0] for u in cfg.get("search_urls") or []]
     locs = (qs[0].get("locations") if qs else None) or []
-    days = cfg.get("job_age_days") or {"day": 1, "week": 7, "month": 30}.get(cfg.get("date_posted"), 7)
+    days = (cfg.get("job_age_days") or cfg.get("date_posted_days")
+            or {"day": 1, "week": 7, "month": 30}.get(cfg.get("date_posted"), 7))
     return {"keywords": [k for k in kws if k], "exp": (qs[0].get("experience") if qs else None) or 2,
             "locations": [l for l in locs if l], "days": days, "sort": cfg.get("sort_by_date", True),
             "ctc": int(cfg.get("min_ctc_lpa") or 0)}
@@ -148,6 +150,19 @@ def _ask_recommended(default: bool) -> bool:
     return default if not raw else raw.startswith("y")
 
 
+def use_recommended_only(cfg: dict, ask: bool = False, tabs: list[str] | None = None):
+    """Naukri: apply only to Jobs → Recommended jobs (Handpicked for you, and optionally the other tabs)."""
+    from src.sites.naukri import REC_TABS
+    if ask and tabs is None:
+        raw = console.input(escape("  Tabs: Enter = Handpicked for you · a = all 4 (Handpicked, Applies, Preferences, "
+                                   "You might like) · or e.g. handpicked,you_might_like > ")).strip().lower()
+        tabs = (list(REC_TABS) if raw == "a" else
+                [t.strip() for t in raw.split(",") if t.strip() in REC_TABS] or ["handpicked"])
+    cfg.update(recommended=True, recommended_only=True, recommended_tabs=tabs or cfg.get("recommended_tabs")
+               or ["handpicked"])
+    console.print(f"  → Naukri recommended jobs only: {', '.join(REC_TABS[t] for t in cfg['recommended_tabs'])}")
+
+
 def _ask_ctc(default: int) -> int:
     """Minimum package in LPA. Enter keeps the default; 0 means any salary."""
     raw = console.input(escape(
@@ -164,8 +179,11 @@ def choose_search(site: str, settings: Settings, keywords=None, exp=None, locati
         console.rule(f"[bold]What should I search on {site}?[/] (Enter = keep default)")
         hint = (f"Enter = your {len(cfg['search_urls'])} saved links" if cfg.get("search_urls")
                 else ", ".join(d["keywords"]))
-        raw = console.input(escape(f"  Stack / role (comma for several) — or paste a {site} search link "
+        extra_hint = "  ·  h = Handpicked/Recommended jobs only" if site == "naukri" else ""
+        raw = console.input(escape(f"  Stack / role (comma for several) — or paste a {site} search link{extra_hint} "
                                    f"[{hint}] > ")).strip()
+        if site == "naukri" and raw.lower() in ("h", "handpicked", "recommended", "reco"):
+            return use_recommended_only(cfg, ask=True)
         if not raw and cfg.get("search_urls"):
             console.print(f"  → using your {len(cfg['search_urls'])} saved {site} search links (search.yaml)")
             if site == "linkedin":
@@ -220,6 +238,8 @@ def choose_search(site: str, settings: Settings, keywords=None, exp=None, locati
         cfg["min_ctc_lpa"] = ctc
     else:
         cfg["date_posted"] = "day" if days <= 1 else "week" if days <= 7 else "month"
+        cfg["date_posted_days"] = days
+        cfg["experience"] = exp
         cfg["experience_levels"] = [1, 2] if exp < 2 else [2, 3] if exp < 5 else [3, 4] if exp < 10 else [4, 5]
     console.print(f"  → {', '.join(kws)} · {exp} yrs · {', '.join(locs) or 'anywhere'} · last {days} day(s)"
                   f"{' · newest first' if sort else ''}"

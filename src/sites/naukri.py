@@ -23,12 +23,10 @@ from src.core.session import ApplySession
 from src.sites.base import SiteAdapter
 
 BASE = "https://www.naukri.com"
-REC_PAGE = f"{BASE}/mnjuser/recommended-jobs"
-RECOMMENDED_APIS = (
-    "/jobapi/v3/search?noOfResults=20&urlType=recommended&searchType=recommended&pageNo={page}&src=recommendedJobs",
-    "/jobapi/v3/search?noOfResults=20&urlType=recommended_jobs&searchType=reco&pageNo={page}&src=mnjRecommended",
-    "/jobapi/v4/search?noOfResults=20&searchType=recommend&pageNo={page}&src=recommendedJobs",
-)
+REC_PAGE = f"{BASE}/mnjuser/recommendedjobs"          # Jobs menu → Recommended jobs
+# tabs on that page (search.yaml naukri.recommended_tabs); each click loads POST /jobapi/v2/search/recom-jobs
+REC_TABS = {"handpicked": "Handpicked for you", "applies": "Applies", "preferences": "Preferences",
+            "you_might_like": "You might like"}
 
 SEL = {
     "card": "div.srp-jobtuple-wrapper",
@@ -206,7 +204,9 @@ class NaukriAdapter(SiteAdapter):
         """Recommended jobs (Jobs menu) first, then one search per stack.
         A combined keyword makes Naukri pad the page with unrelated roles."""
         if self.cfg.get("recommended", True):
-            yield {"pages": self.cfg.get("recommended_pages", 2), "recommended": True, "keywords": ""}
+            yield {"recommended": True, "keywords": ""}
+            if self.cfg.get("recommended_only"):
+                return
         base = {"pages": self.cfg.get("pages_per_query", 1), "job_age": self.cfg.get("job_age_days")}
         for url in self.cfg.get("search_urls") or []:
             k = parse_qs(urlsplit(url).query).get("k", [""])[0]
@@ -292,31 +292,6 @@ class NaukriAdapter(SiteAdapter):
             return
         yield from self._search_html(page, query)
 
-    def _fetch_api(self, page, url: str) -> dict | None:
-        try:
-            data = page.evaluate(
-                """async (url) => {
-                    const r = await fetch(url, {
-                        credentials: 'include',
-                        headers: {
-                            'accept': 'application/json',
-                            'appid': '109',
-                            'systemid': 'Naukri',
-                            'clientid': 'd3skt0p',
-                            'gid': 'LOCATION,INDUSTRY,EDUCATION,FAREA_ROLE',
-                        },
-                    });
-                    const text = (await r.text()).trim();
-                    if (!r.ok || !text.startsWith('{')) return null;
-                    try { return JSON.parse(text); } catch (e) { return null; }
-                }""",
-                url,
-            )
-        except PlaywrightError:
-            return None
-        return data if isinstance(data, dict) and (
-            "jobDetails" in data or "noOfJobs" in data or "recommendedJobs" in data) else None
-
     def _goto_capture(self, page, url: str) -> dict | None:
         """Open a results URL and keep the search JSON the page itself requests.
 
@@ -361,30 +336,44 @@ class NaukriAdapter(SiteAdapter):
         return any(w in blob for w in words)
 
     def _search_recommended(self, page, query: dict) -> Iterator[Job]:
-        """Jobs menu → Recommended Jobs. The homepage list Naukri builds from your profile."""
-        print("\nRecommended jobs — Jobs menu")
-        seen = set()
-        for page_no in range(1, query["pages"] + 1):
-            jobs = []
-            for pattern in RECOMMENDED_APIS:
-                data = self._fetch_api(page, BASE + pattern.format(page=page_no))
-                jobs = jobs_from_api(data or {})
-                if jobs:
-                    break
-            if not jobs and page_no == 1:
-                print("  recommendation API empty — opening Recommended Jobs")
-                yield from self._recommended_html(page, seen)
-                return
-            fresh = [j for j in jobs if j.id not in seen]
-            for job in fresh:
-                seen.add(job.id)
-            print(f"  page {page_no}: {len(fresh)} recommended")
-            if not fresh:
-                return
-            yield from fresh
+        """Recommended jobs page (naukri.com/mnjuser/recommendedjobs): one tab at a time, the job list
+        is the JSON the page loads for that tab (POST /jobapi/v2/search/recom-jobs)."""
+        seen: set = set()
+        for tab in self.cfg.get("recommended_tabs") or ["handpicked"]:
+            label = REC_TABS.get(tab, tab)
+            print(f"\nRecommended jobs — {label}  ({REC_PAGE})")
+            data = self._capture_recom(page, label)
+            if data is None:
+                print("  list not loaded — reading the cards on the page")
+                yield from self._recommended_html(page, seen, label)
+                continue
+            jobs = [j for j in jobs_from_api(data, self.cfg.get("recommended_days")) if j.id not in seen]
+            seen.update(j.id for j in jobs)
+            print(f"  {len(jobs)} jobs")
+            yield from jobs
 
-    def _recommended_html(self, page, seen: set) -> Iterator[Job]:
-        page.goto(REC_PAGE, wait_until="domcontentloaded")
+    def _capture_recom(self, page, label: str) -> dict | None:
+        """Open the Recommended page (and click the tab) while keeping the recom-jobs response."""
+        is_recom = lambda r: "/search/recom-jobs" in r.url and r.request.method == "POST"
+        try:
+            with page.expect_response(is_recom, timeout=20000) as info:
+                page.goto(REC_PAGE, wait_until="domcontentloaded")
+            data = info.value.json()
+            if label != REC_TABS["handpicked"]:
+                tab = page.locator("button.tab-list-item").filter(has_text=re.compile(rf"^\s*{re.escape(label)}", re.I))
+                if not tab.count():
+                    print(f"  no '{label}' tab on the page")
+                    return {}
+                with page.expect_response(is_recom, timeout=20000) as info:
+                    tab.first.click()
+                data = info.value.json()
+        except (PWTimeout, PlaywrightError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _recommended_html(self, page, seen: set, label: str = "") -> Iterator[Job]:
+        if REC_PAGE not in page.url:
+            page.goto(REC_PAGE, wait_until="domcontentloaded")
         page.wait_for_timeout(2500)
         for _ in range(4):
             page.mouse.wheel(0, 2200)

@@ -27,6 +27,9 @@ def main():
                    help="with --auto: open company sites (Workday, unknown) immediately (not queued)")
     r.add_argument("--queue-external", action="store_true",
                    help="with --auto: queue generic/Workday company sites for end of run (or apply --queued)")
+    r.add_argument("--handpicked", nargs="?", const="handpicked", metavar="TABS",
+                   help="naukri: only Jobs → Recommended jobs. Default tab Handpicked; or "
+                        "'all' / handpicked,applies,preferences,you_might_like")
     r.add_argument("--auto", action="store_true",
                    help="max-apply mode: no per-job confirm, auto-submit when every answer is known")
 
@@ -92,8 +95,13 @@ def main():
     elif args.cmd == "login":
         runner.login(args.site, settings)
     else:
-        runner.choose_search(args.site, settings, args.keywords, args.exp, args.location, args.days,
-                             ask=not args.no_ask)
+        if args.handpicked and args.site == "naukri":
+            from src.sites.naukri import REC_TABS
+            tabs = list(REC_TABS) if args.handpicked == "all" else [t.strip() for t in args.handpicked.split(",")]
+            runner.use_recommended_only(settings.search.setdefault("naukri", {}), tabs=tabs)
+        else:
+            runner.choose_search(args.site, settings, args.keywords, args.exp, args.location, args.days,
+                                 ask=not args.no_ask)
         runner.run(args.site, settings, args.limit, args.dry_run, args.auto, args.retry, args.now,
                    args.queue_external)
 
